@@ -77,7 +77,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
                 "scenario_stage_at_handover": "block2"
             })
             from router import route_message
-            return route_message("", user_id, force_stage="block9")
+            return route_message("", user_id, force_stage="block5")
 
         clarification_prompt = global_prompt + "\n\n" + stage_prompt + "\n\n" + \
             "Предоставленной вами информации недостаточно, чтобы понять формат мероприятия. " \
@@ -145,7 +145,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
                 "scenario_stage_at_handover": "block2"
             })
             from router import route_message
-            return route_message("", user_id, force_stage="block9")
+            return route_message("", user_id, force_stage="block5")
 
         clarification_prompt = global_prompt + "\n\n" + stage_prompt + "\n\n" + \
             "Предоставленной вами информации было недостаточно. " \
@@ -185,8 +185,8 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     elif show_type == "нестандартное":
         next_block = "block3d"
     else:
-        logger.info(f"[warn] ❗Неожиданный тип шоу: {show_type}, fallback → block9")
-        next_block = "block9"  # fallback на всякий случай
+        logger.info(f"[warn] ❗Неожиданный тип шоу: {show_type}, fallback → block5")
+        next_block = "block5"  # fallback на всякий случай
 
     from router import route_message
     return route_message(message_text, user_id, force_stage=next_block)
@@ -226,14 +226,14 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 
     update_state(user_id, {"stage": "block2", "last_message_ts": time.time()})
 
-    # Финальный таймер — если клиент не ответит ещё 4 часа, уходим в block9
+    # Финальный таймер — если клиент не ответит ещё 4 часа, уходим в block5
     def finalize_if_still_silent():
         state = get_state(user_id)
         if not state or state.get("stage") != "block2":
             return  # Ответил — всё ок
         update_state(user_id, {"handover_reason": "no_response_after_2_2", "scenario_stage_at_handover": "block2"})
         from router import route_message
-        route_message("", user_id, force_stage="block9")
+        route_message("", user_id, force_stage="block5")
 
     plan(user_id,
     "blocks.block_02:finalize_if_still_silent",   # <‑‑ путь к функции

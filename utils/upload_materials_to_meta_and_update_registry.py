@@ -1,4 +1,4 @@
-import os, json, requests
+import os, json, requests, time, threading
 from datetime import datetime, timedelta
 from tempfile import TemporaryDirectory
 from botocore.exceptions import ClientError
@@ -8,6 +8,7 @@ from utils.materials import (
     CMP_PREFIX,
 )
 from logger import logger
+from utils.token_manager import get_token
 
 KP_PREFIX = "materials/KP/"
 REGISTRY_KEY = "materials/media_registry.json"
@@ -123,3 +124,17 @@ def upload_materials_to_meta_and_update_registry(wa_token: str):
 
     registry_save(reg)
     logger.info("✅ media_registry.json обновлён")
+
+def start_media_upload_loop():
+
+    def loop():
+        while True:
+            token = get_token()                      # всегда самый новый
+            try:
+                logger.info("⏫ Ежедневная загрузка материалов…")
+                upload_materials_to_meta_and_update_registry(token)
+            except Exception as e:
+                logger.error(f"💥 Ошибка загрузки материалов: {e}")
+            time.sleep(86400)
+    threading.Thread(target=loop, daemon=True).start()
+    logger.info("📅 Цикл ежедневной загрузки материалов запущен")

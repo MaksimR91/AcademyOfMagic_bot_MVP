@@ -1,9 +1,11 @@
-import os, time, requests
+import os, time, requests, threading
 from logger import logger
 
 SUPABASE_URL        = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY    = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
+LOCAL_DEV           = os.getenv("LOCAL_DEV") == "1"
+
 
 HEADERS = {
      "apikey": SUPABASE_API_KEY,
@@ -12,6 +14,10 @@ HEADERS = {
  }
 
 def load_token_from_supabase(retries: int = 3, delay_sec: int = 3) -> str:
+    if LOCAL_DEV:
+        raise RuntimeError("LOCAL_DEV=1: skip Supabase load")
+    if not SUPABASE_URL or not SUPABASE_API_KEY:
+        raise RuntimeError("Supabase env missing: SUPABASE_URL or SUPABASE_API_KEY")
     url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}?select=token&order=updated_at.desc&limit=1"
     last_err = None
     for attempt in range(1, retries + 1):
@@ -29,6 +35,12 @@ def load_token_from_supabase(retries: int = 3, delay_sec: int = 3) -> str:
     raise last_err
 
 def save_token_to_supabase(token: str) -> bool:
+    if LOCAL_DEV:
+        logger.info("[supabase] LOCAL_DEV=1: save_token пропущен")
+        return True
+    if not SUPABASE_URL or not SUPABASE_API_KEY:
+        logger.error("[supabase] save_token: missing SUPABASE_URL/API_KEY")
+        return False
     url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}"
     payload = {"token": token}
     # Можно добавить Prefer, но и так ок:
@@ -43,7 +55,7 @@ def ping_supabase():
     Лёгкий GET, чтобы проект не уснул.
     Берём минимальный селект из таблицы tokens.
     """
-    if not SUPABASE_URL or not SUPABASE_API_KEY:
+    if LOCAL_DEV or (not SUPABASE_URL or not SUPABASE_API_KEY):
         return
     try:
         url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}?select=id&limit=1"
@@ -51,3 +63,13 @@ def ping_supabase():
         logger.info(f"[supabase_ping] status={r.status_code}")
     except Exception as e:
         logger.warning(f"[supabase_ping] fail: {e}")
+
+def start_supabase_ping_loop(interval_hours: int = 12):
+    def loop():
+        while True:
+            try:
+                ping_supabase()
+            except Exception as e:
+                logger.warning(f"⚠️ Supabase ping error: {e}")
+            time.sleep(interval_hours * 3600)
+    threading.Thread(target=loop, daemon=True).start()

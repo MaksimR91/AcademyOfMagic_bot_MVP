@@ -143,7 +143,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
 
     if wants_handover_ai(message_text):
         update_state(user_id, {"handover_reason": "asked_handover"})
-        return route_message(message_text, user_id, force_stage="block9")
+        return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
     prev_info = state.get("event_description", "")
@@ -273,7 +273,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
                     "handover_reason": "early_date_or_busy",
                     "scenario_stage_at_handover": "block3"
                 })
-                return route_message("", user_id, force_stage="block9")
+                return route_message("", user_id, force_stage="block5")
 
     # 4) Доспрашивание недостающих полей (НЕ сбрасываем availability_reply_sent)
     state = get_state(user_id)
@@ -325,7 +325,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
                 "handover_reason": "could_not_collect_info",
                 "scenario_stage_at_handover": "block3"
             })
-            return route_message("", user_id, force_stage="block9")
+            return route_message("", user_id, force_stage="block5")
 
     # 6) Фолбек: все данные есть, но availability ещё не отправлен
     state = get_state(user_id)
@@ -371,7 +371,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
                     "handover_reason": "early_date_or_busy",
                     "scenario_stage_at_handover": "block3"
                 })
-                return route_message("", user_id, force_stage="block9")
+                return route_message("", user_id, force_stage="block5")
 
     # 7) Переходы по флагу решения даты (в state, не в модульных глобалках)
     state = get_state(user_id)
@@ -384,7 +384,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
                 "handover_reason": "early_date_or_busy",
                 "scenario_stage_at_handover": "block3"
             })
-            return route_message("", user_id, force_stage="block9")
+            return route_message("", user_id, force_stage="block5")
 
     # 8) Финальные обновления + напоминания
     update_state(user_id, {
@@ -426,7 +426,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 
     update_state(user_id, {"stage": "block3a", "last_message_ts": time.time()})
 
-    # финальный таймер — ещё 4 ч тишины → block9
+    # финальный таймер — ещё 4 ч тишины → block5
     def finalize_if_still_silent():
         from router import route_message
         state = get_state(user_id)
@@ -436,6 +436,6 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
             "handover_reason": "no_response_after_3_2",
             "scenario_stage_at_handover": "block3"
         })
-        route_message("", user_id, force_stage="block9")
+        route_message("", user_id, force_stage="block5")
 
     plan(user_id, "blocks.block_03a:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)

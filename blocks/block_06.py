@@ -1,4 +1,4 @@
-# blocks/block_10.py
+# blocks/block_06.py
 import os
 import time
 from utils.reminder_engine import plan
@@ -7,10 +7,10 @@ from state.state import get_state, update_state
 from logger import logger
 
 """
-Block 10: Финальный экспорт данных в Notion CRM.
+Block 6: Финальный экспорт данных в Notion CRM.
 
 ЛОГИКА:
-  • Берём всё накопленное в state к моменту handover (после block9).
+  • Берём всё накопленное в state к моменту handover (после block5).
   • Определяем «достигнутый этап» (scenario_stage_at_handover -> человеко-читабельное имя) и пишем его в поле ЭТАП.
   • Поле ОТКАЗ заполняем только при реальном отказе / потере лида.
   • Причину handover (handover_reason) помещаем в поле 'дополнение' как пояснение + прочие детали.
@@ -31,13 +31,8 @@ SCENARIO_STAGE_MAP = {
     "block3c": "Получение информации",
     "block3d": "Получение информации",
     "block4":  "Отправка материалов",
-    "block5":  "Работа с возражениями",
-    "block6a": "Получено согласие клиента",
-    "block6b": "Получен отказ клиента",
-    "block7":  "Проверка ответов и чека",
-    "block8":  "Подтверждено клиентом",
-    "block9":  "Ручная обработка заказа",
-    "block10": "CRM",
+    "block5":  "Ручная обработка заказа",
+    "block6": "CRM",
 }
 
 # ───────────────── Причины handover (для комментариев / отказов) ────────────
@@ -232,15 +227,15 @@ def _build_notion_properties(st: dict) -> dict:
 def retry_export(user_id: str):
     """Внешняя функция — нужна APScheduler для импорта."""
     from router import route_message
-    route_message("", user_id, force_stage="block10")
-    logger.info(f"[block10] scheduled retry in {RETRY_DELAY_SECONDS}s user={user_id}")
+    route_message("", user_id, force_stage="block6")
+    logger.info(f"[block6] scheduled retry in {RETRY_DELAY_SECONDS}s user={user_id}")
     
 def _schedule_retry(user_id: str):
-    plan(user_id, "blocks.block_10:retry_export", RETRY_DELAY_SECONDS)
+    plan(user_id, "blocks.block_6:retry_export", RETRY_DELAY_SECONDS)
 
 
 # ----------------------------------------------------------------------------
-def handle_block10(message_text: str, user_id: str, send_text_func):
+def handle_block6(message_text: str, user_id: str, send_text_func):
     """
     Финальный этап: выгрузка данных в Notion CRM.
     Никаких сообщений клиенту не отправляем.
@@ -249,19 +244,19 @@ def handle_block10(message_text: str, user_id: str, send_text_func):
 
     # Уже выгружено — ничего не делаем
     if st.get("notion_exported"):
-        logger.info(f"[block10] already exported user={user_id} page={st.get('notion_page_id')}")
+        logger.info(f"[block6] already exported user={user_id} page={st.get('notion_page_id')}")
         return
 
     notion_key = os.getenv("NOTION_API_KEY")
     db_id      = os.getenv("NOTION_CRM_DATABASE_ID")
     if not notion_key or not db_id:
-        logger.error("[block10] NOTION_API_KEY or NOTION_CRM_DATABASE_ID missing")
+        logger.error("[block6] NOTION_API_KEY or NOTION_CRM_DATABASE_ID missing")
         update_state(user_id, {"notion_export_error": True})
         return  # ретраи бессмысленны без ключей
 
     props = _build_notion_properties(st)
     if "Name" not in props:
-        logger.error("[block10] No 'Name' property built — abort export")
+        logger.error("[block6] No 'Name' property built — abort export")
         update_state(user_id, {"notion_export_error": True})
         return
 
@@ -288,21 +283,21 @@ def handle_block10(message_text: str, user_id: str, send_text_func):
                         }
                     ],
                 )
-                logger.info(f"[block10] image block appended user={user_id}")
+                logger.info(f"[block6] image block appended user={user_id}")
             except Exception as e:
-                logger.warning(f"[block10] cannot append image block: {e}")
+                logger.warning(f"[block6] cannot append image block: {e}")
         update_state(user_id, {
             "notion_exported": True,
             "notion_page_id": page_id,
             "notion_export_error": False,
             "last_message_ts": time.time()
         })
-        logger.info(f"[block10] Notion export SUCCESS user={user_id} page={page_id}")
+        logger.info(f"[block6] Notion export SUCCESS user={user_id} page={page_id}")
     except APIResponseError as e:
-        logger.error(f"[block10] Notion API error user={user_id}: {e}")
+        logger.error(f"[block6] Notion API error user={user_id}: {e}")
         _handle_export_failure(user_id, retry_count)
     except Exception as e:
-        logger.error(f"[block10] Unexpected export error user={user_id}: {e}")
+        logger.error(f"[block6] Unexpected export error user={user_id}: {e}")
         _handle_export_failure(user_id, retry_count)
 
 # ----------------------------------------------------------------------------
@@ -311,7 +306,7 @@ def _handle_export_failure(user_id: str, retry_count: int):
     Обработка неудачной попытки экспорта.
     """
     if retry_count + 1 >= MAX_RETRY_COUNT:
-        logger.error(f"[block10] Max retries reached ({MAX_RETRY_COUNT}) user={user_id} — giving up")
+        logger.error(f"[block6] Max retries reached ({MAX_RETRY_COUNT}) user={user_id} — giving up")
         update_state(user_id, {
             "notion_export_error": True,
             "notion_retry_count": retry_count + 1,
@@ -324,5 +319,5 @@ def _handle_export_failure(user_id: str, retry_count: int):
         "notion_retry_count": retry_count + 1,
         "last_message_ts": time.time()
     })
-    logger.info(f"[block10] will retry (attempt {retry_count + 1}) user={user_id}")
+    logger.info(f"[block6] will retry (attempt {retry_count + 1}) user={user_id}")
     _schedule_retry(user_id)

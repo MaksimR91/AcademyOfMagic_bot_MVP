@@ -100,7 +100,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
     if wants_handover_ai(message_text):
         update_state(user_id, {"handover_reason": "asked_handover"})
         from router import route_message
-        return route_message(message_text, user_id, force_stage="block9")
+        return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
     updated_description = (state.get("event_description", "") + "\n" + message_text).strip()
@@ -225,7 +225,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                     "scenario_stage_at_handover": "block3"
                 })
                 from router import route_message
-                return route_message("", user_id, force_stage="block9")
+                return route_message("", user_id, force_stage="block5")
         
     # 2. Проверяем недостающие поля
     state = get_state(user_id)
@@ -281,7 +281,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                 "scenario_stage_at_handover": "block3"
             })
             from router import route_message
-            return route_message("", user_id, force_stage="block9")
+            return route_message("", user_id, force_stage="block5")
         
     # 4. Определяем дату и время, если возможно
     
@@ -390,7 +390,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                         "scenario_stage_at_handover": "block3"
                     })
                     from router import route_message
-                    return route_message("", user_id, force_stage="block9")
+                    return route_message("", user_id, force_stage="block5")
 
     # Переходы
     state = get_state(user_id)
@@ -404,7 +404,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                 "scenario_stage_at_handover": "block3"
             })
             from router import route_message
-            return route_message("", user_id, force_stage="block9")
+            return route_message("", user_id, force_stage="block5")
 
     # Финальные обновления
     update_state(user_id, {
@@ -449,14 +449,14 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 
     update_state(user_id, {"stage": "block3b", "last_message_ts": time.time()})
 
-    # финальный таймер — ещё 4 ч тишины → block9
+    # финальный таймер — ещё 4 ч тишины → block5
     def finalize_if_still_silent():
         state = get_state(user_id)
         if not state or state.get("stage") != "block3b":
             return
         update_state(user_id, {"handover_reason": "no_response_after_3_2", "scenario_stage_at_handover": "block3"})
         from router import route_message
-        route_message("", user_id, force_stage="block9")
+        route_message("", user_id, force_stage="block5")
 
     plan(user_id,
     "blocks.block_03b:finalize_if_still_silent",   # <‑‑ путь к функции

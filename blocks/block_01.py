@@ -30,7 +30,7 @@ def handle_block1(message_text, user_id, send_reply_func):
     if need_handover:
         update_state(user_id, {"handover_reason": "asked_handover", "scenario_stage_at_handover": "block1"})
         from router import route_message
-        return route_message(message_text, user_id, force_stage="block9")
+        return route_message(message_text, user_id, force_stage="block5")
 
     # Склеиваем промпты
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)

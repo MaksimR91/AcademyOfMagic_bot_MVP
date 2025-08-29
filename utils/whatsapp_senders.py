@@ -1,8 +1,5 @@
-import json
-import os
-import sys
-import logging
-import requests
+import os, requests, logging
+from utils.token_manager import get_token
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +18,9 @@ def _chunks(txt: str, size: int = MAX_LEN):
 
 # ─── служебка ────────────────────────────────────────────────────
 def _headers() -> dict:
-    """
-    Берём уже загруженный модуль `app`, чтобы не запускать его заново.
-    """
-    _app = sys.modules.get("app")
-    if _app is None:          # модуль ещё не загружен (редкий кейс тестов)
-        import app as _app
-
-    token = _app.get_token()
     return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/json"
+        "Authorization": f"Bearer {get_token()}",
+        "Content-Type":  "application/json",
     }
 
 

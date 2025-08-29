@@ -11,7 +11,7 @@ from utils.whatsapp_senders import (
 from logger import logger
 
 GLOBAL_PROMPT = "prompts/global_prompt.txt"
-STAGE_PROMPT  = "prompts/block09_prompt.txt"
+STAGE_PROMPT  = "prompts/block05_prompt.txt"
 
 # ---------------------------------------------------------------------------
 def _load(p: str) -> str:
@@ -19,7 +19,7 @@ def _load(p: str) -> str:
         return f.read()
 
 # ---------------------------------------------------------------------------
-def handle_block9(
+def handle_block5(
     message_text: str,
     user_id: str,
     send_text_func,          # клиенту
@@ -28,7 +28,7 @@ def handle_block9(
 ):
     """
     Универсальный hand-over: формируем расширенное резюме и передаём
-    Арсению. Вызывается force_stage='block9' из любого блока.
+    Арсению. Вызывается force_stage='block5' из любого блока.
     """
     if wants_handover_ai(message_text):
         # уже в процессе передачи — игнорируем повторную просьбу
@@ -39,7 +39,7 @@ def handle_block9(
     if not st.get("scenario_stage_at_handover"):
         update_state(user_id, {"scenario_stage_at_handover": st.get("stage")})
     # --- 1. Отправка резюме Арсению (однократно) ---------------------
-    logger.info("[block9] arseni_notified flag: %s", st.get("arseniy_notified"))
+    logger.info("[block5] arseni_notified flag: %s", st.get("arseniy_notified"))
     if not st.get("arseniy_notified"):
         reason  = st.get("handover_reason", "")
         comment = _reason_to_comment(reason)
@@ -50,11 +50,11 @@ def handle_block9(
             # Одним вызовом: сам разрежет и пошлёт несколько template-частей
             wa_resps = send_owner_resume(summary)   # list[requests.Response]
             statuses = [getattr(r, "status_code", "?") for r in wa_resps]
-            logger.info("[block9] resume WA-status=%s user=%s", statuses, user_id)
+            logger.info("[block5] resume WA-status=%s user=%s", statuses, user_id)
             if any(getattr(r, "status_code", 0) // 100 == 2 for r in wa_resps):
                 update_state(user_id, {"arseniy_notified": True})
         except Exception as e:
-            logger.error("[block9] failed to send owner summary: %s", e)
+            logger.error("[block5] failed to send owner summary: %s", e)
 
         # --- 1a. Фото именинника -------------------------------------
         if st.get("celebrant_photo_id"):
@@ -83,7 +83,7 @@ def handle_block9(
         })
 
     # --- 3. Переход к block10 (CRM) ---------------------------------
-    _goto(user_id, "block10")
+    _goto(user_id, "block6")
 
 # ---------------------------------------------------------------------------
 def _pick(snap, st, key, default=""):
@@ -198,7 +198,7 @@ def _forward_and_persist_photo(media_id: str, user_id: str, send_owner_media):
         try:
             send_owner_media(media_id)
         except Exception as e:
-            logger.warning(f"[block9] send_owner_media fail: {e}")
+            logger.warning(f"[block5] send_owner_media fail: {e}")
 
     # --- 1. если уже сохранена постоянная ссылка — выход ----------
     if st.get("celebrant_photo_url"):
@@ -216,16 +216,16 @@ def _forward_and_persist_photo(media_id: str, user_id: str, send_owner_media):
         img_resp = requests.get(file_url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
         img_resp.raise_for_status()
     except Exception as e:
-        logger.error(f"[block9] cannot fetch media {media_id}: {e}")
+        logger.error(f"[block5] cannot fetch media {media_id}: {e}")
         return
 
     # --- 3. кладём в S3 -------------------------------------------
     try:
         perm_url = upload_image(img_resp.content)
         update_state(user_id, {"celebrant_photo_url": perm_url})
-        logger.info(f"[block9] photo uploaded → {perm_url} user={user_id}")
+        logger.info(f"[block5] photo uploaded → {perm_url} user={user_id}")
     except Exception as e:
-        logger.error(f"[block9] S3 upload failed: {e}")
+        logger.error(f"[block5] S3 upload failed: {e}")
 
 # ---------------------------------------------------------------------------
 def _goto(user_id: str, next_stage: str):

@@ -2,6 +2,7 @@ import os, time, logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.jobstores.memory import MemoryJobStore
+from datetime import datetime, timezone
 from state.state import get_state          # тот же dict‑API
 
 if not logging.getLogger().handlers:
@@ -13,44 +14,46 @@ if not logging.getLogger().handlers:
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 log.info("📦 reminder_engine import started")
+LOCAL_DEV   = os.getenv("LOCAL_DEV", "0") == "1"
+TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0") == "1"
 
-# ---------- JobStore (Postgres → fallback memory) --------------
-try:
-    # ── 1) Предпочитаем готовый DSN ---------------------------------
-    pg_url = os.getenv("SUPABASE_DB_URL")
-
-    # ── 2) Fallback: строим URL по‑старому из SUPABASE_URL ----------
-    if not pg_url:
-        raw_supabase = os.getenv("SUPABASE_URL")
-        if not raw_supabase:
-            raise RuntimeError("neither SUPABASE_DB_URL nor SUPABASE_URL set")
-
-        pg_url = (
-            raw_supabase
-            .replace("https://", "postgresql+psycopg2://")
-            .replace(".supabase.co", ".supabase.co/postgres")
-        )
-    log.info(f"🔗 reminder_engine PG url → {pg_url.split('@')[-1].split('?')[0]}")
-
-    jobstores = {
-        "default": SQLAlchemyJobStore(
-            url=pg_url,
-            engine_options={"connect_args": {"connect_timeout": 5}},  # чтобы не висеть минутами
-        )
-    }
-except Exception as e:
-    log.exception(f"⚠️  SQLAlchemyJobStore init failed, falling back to in-memory store: {e}")
+# ---------- JobStore выбор ----------
+if LOCAL_DEV:
     jobstores = {"default": MemoryJobStore()}
+    log.info("🟢 LOCAL_DEV=1 → MemoryJobStore (без БД)")
+else:
+    try:
+        # 1) Предпочтительно: готовый DSN
+        pg_url = os.getenv("SUPABASE_DB_URL")
+        # 2) Fallback: попытаться построить из SUPABASE_URL (если есть)
+        if not pg_url:
+            raw_supabase = os.getenv("SUPABASE_URL")
+            if not raw_supabase:
+                raise RuntimeError("neither SUPABASE_DB_URL nor SUPABASE_URL set")
+            pg_url = (
+                raw_supabase
+                .replace("https://", "postgresql+psycopg2://")
+                .replace(".supabase.co", ".supabase.co/postgres")
+            )
+        log.info(f"🔗 reminder_engine PG url → {pg_url.split('@')[-1].split('?')[0]}")
+        jobstores = {"default": SQLAlchemyJobStore(
+            url=pg_url,
+            engine_options={"connect_args": {"connect_timeout": 5}},
+        )}
+    except Exception as e:
+        log.exception(f"⚠️ SQLAlchemyJobStore init failed → MemoryJobStore: {e}")
+        jobstores = {"default": MemoryJobStore()}
 
-# ---------- APScheduler ----------------------------------------
-# Render или prod → SQLAlchemyJobStore  
-# Локально → MemoryJobStore (не требует БД)
+# ---------- APScheduler старт ----------
 sched = BackgroundScheduler(jobstores=jobstores, timezone="UTC")
-try:
-    sched.start()
-    log.info("⏰ reminder_engine started with %s jobstore", next(iter(jobstores)))
-except Exception as e:
-    log.exception(f"💥 APScheduler start error: {e}")
+if TEST_MODE:
+    log.info("🟡 TEST_MODE=1 → шедулер не стартуем")
+else:
+    try:
+        sched.start()
+        log.info("⏰ reminder_engine started with %s jobstore", next(iter(jobstores)))
+    except Exception as e:
+        log.exception(f"💥 APScheduler start error: {e}")
 
 # ---------- универсальный планировщик ---------------------------
 #  accepted func_path formats
@@ -69,10 +72,10 @@ def plan(user_id: str, func_ref, delay_sec: int) -> None:
     else:
         norm_path = func_ref.replace(":", ".", 1)
     job_id    = f"{user_id}:{norm_path}"
-    run_at = time.time() + delay_sec
+    run_at_ts = time.time() + delay_sec
 
     # при рестарте, если задача уже прошла – не ставим снова
-    if run_at <= time.time():
+    if run_at_ts <= time.time():
         return
 
     # remove & add (idempotent)
@@ -80,14 +83,16 @@ def plan(user_id: str, func_ref, delay_sec: int) -> None:
         sched.remove_job(job_id)
     except Exception:
         pass
+     # run_date — явный UTC datetime, чтобы не путаться с таймзоной
+    run_dt = datetime.fromtimestamp(run_at_ts, tz=timezone.utc)
     sched.add_job(
-            execute_job,                          # ← уже объект-функция
-            "date",
-            id=job_id,
-            run_date=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(run_at)),
-            misfire_grace_time=300,
-            args=[user_id, norm_path],             # ← аргументы
-         )
+        execute_job,
+        "date",
+        id=job_id,
+        run_date=run_dt,
+        misfire_grace_time=300,
+        args=[user_id, norm_path],
+    )
     log.info(f"[reminder_engine] scheduled {job_id} in {delay_sec//60} min")
 
 # ---------- точка входа, которую увидит APScheduler -------------

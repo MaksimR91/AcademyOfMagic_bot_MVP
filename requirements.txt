@@ -12,3 +12,5 @@ notion-client>=2.2
 concurrent-log-handler>=0.9
 SQLAlchemy>=1.4,<2.0
 psycopg2-binary>=2.9,<2.10
+pytest
+python-dotenv

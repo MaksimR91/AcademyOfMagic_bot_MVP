@@ -21,7 +21,7 @@ def handle_block3d(message_text: str, user_id: str, send_reply_func, client_requ
     if wants_handover_ai(message_text):
         update_state(user_id, {"handover_reason": "asked_handover", "scenario_stage_at_handover": "block3"})
         from router import route_message
-        return route_message(message_text, user_id, force_stage="block9")
+        return route_message(message_text, user_id, force_stage="block5")
 
     # Готовим промпт
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
@@ -43,7 +43,7 @@ def handle_block3d(message_text: str, user_id: str, send_reply_func, client_requ
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    # После единственного сообщения переводим поток в block9 (хенд-овер Арсению)
+    # После единственного сообщения переводим поток в block5 (хенд-овер Арсению)
     update_state(user_id, {"handover_reason": "non_standard_show", "scenario_stage_at_handover": "block3"})
     from router import route_message
-    route_message("", user_id, force_stage="block9")
+    route_message("", user_id, force_stage="block5")

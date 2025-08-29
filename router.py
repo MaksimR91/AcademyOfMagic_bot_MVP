@@ -1,4 +1,3 @@
-# router.py
 import os
 import inspect
 import time
@@ -10,13 +9,12 @@ from utils.whatsapp_senders import send_text, send_document, send_video, send_im
 from blocks import (
     block_01, block_02,
     block_03a, block_03b, block_03c, block_03d,
-    block_04, block_05,
-    block_06a, block_06b,
-    block_07, block_08,
-    block_09, block_10,
+    block_04,            # остался как есть
+    block_05,            # новый: раньше был block_09 (handover)
+    block_06,            # новый: раньше был block_10 (итог/финал и т.п.)
 )
 
-# ── читаем список админ‑номеров один раз при импорте ────────────────
+# ── читаем список админ-номеров один раз при импорте ────────────────
 ADMIN_NUMBERS = {
     num.strip() for num in os.getenv("ADMIN_NUMBERS", "").split(",") if num.strip()
 }
@@ -30,17 +28,38 @@ BLOCK_MAP = {
     "block3c": (block_03c, "handle_block3c"),
     "block3d": (block_03d, "handle_block3d"),
     "block4":  (block_04,  "handle_block4"),
+    # 9 → 5
     "block5":  (block_05,  "handle_block5"),
-    "block6a": (block_06a, "handle_block6a"),
-    "block6b": (block_06b, "handle_block6b"),
-    "block7":  (block_07,  "handle_block7"),
-    "block8":  (block_08,  "handle_block8"),
-    "block9":  (block_09,  "handle_block9"),
-    "block10": (block_10,  "handle_block10"),
+    # 10 → 6
+    "block6":  (block_06,  "handle_block6"),
 }
 
+def _response(user_id: str) -> dict:
+    """
+    Единый ответ роутера: возвращаем текущий stage из state.
+    Если stage ещё не задан (самый первый контакт) — вернётся None.
+    """
+    st = get_state(user_id) or {}
+    stage = st.get("stage")
+    # next_step: если блок не положил явный next_step,
+    # для первого касания (block1) считаем что это "hello"
+    next_step = st.get("next_step")
+    if not next_step and stage == "block1":
+        next_step = "hello"
+    return {"ok": True, "stage": stage, "next_step": next_step}
+
+def route_message(text: str, normalized_number: str, client_name: str | None = None, message_uid: str | None = None, message_ts: int | None = None, force_stage: str | None = None):
+    """Единый интерфейс: пробрасываем параметры в _route_message_impl."""
+    return _route_message_impl(
+        message_text=text,
+        user_id=normalized_number,
+        client_name=client_name,
+        force_stage=force_stage,
+        message_uid=message_uid,
+        message_ts=message_ts,
+    )
 # ---------------------------------------------------------------------------
-def route_message(
+def _route_message_impl(
     message_text: str,
     user_id: str,
     client_name: str | None = None,
@@ -51,7 +70,7 @@ def route_message(
 ):
     """
     · Определяем текущий этап пользователя
-    · Делаем идемпотентность/фильтры входящих
+    · Идемпотентность/фильтры входящих
     · Готовим callables для WhatsApp
     · Дергаем нужный handler-блок
     """
@@ -84,13 +103,13 @@ def route_message(
         else:
             logger.warning("Ignored #reset from non-admin %s", user_id)
             send_text(wa_to, "Команда недоступна.")
-        return
+        return _response(user_id)
 
     elif message_text.strip() == "#jobs" and user_id in ADMIN_NUMBERS:
         from utils.reminder_engine import sched
         jobs = "\n".join(j.id for j in sched.get_jobs())
         send_text(wa_to, jobs or "нет job-ов")
-        return
+        return _response(user_id)
 
     # --------- идемпотентность и защита от «старых» входящих -------------
     state = get_state(user_id) or {}
@@ -110,8 +129,8 @@ def route_message(
     last_seen = state.get("last_msg_ts") or 0.0
 
     # Лимиты
-    DUP_WINDOW_SEC  = int(os.getenv("DUP_WINDOW_SEC", "120"))          # 2 мин — «почти дубликат»
-    LATE_DROP_MIN   = int(os.getenv("LATE_DROP_MIN",  "20"))           # 20 мин — «застарелое»
+    DUP_WINDOW_SEC  = int(os.getenv("DUP_WINDOW_SEC", "120"))
+    LATE_DROP_MIN   = int(os.getenv("LATE_DROP_MIN",  "20"))
     LATE_DROP_SEC   = LATE_DROP_MIN * 60
 
     logger.info(
@@ -119,16 +138,14 @@ def route_message(
         f"last_uid={last_uid} last_ts={last_seen} hash={msg_hash[:7]}"
     )
 
-    # 3) «застарелое» сообщение (Meta прислала вне очереди и сильно старое)
     if message_ts and last_seen and (message_ts < (last_seen - LATE_DROP_SEC)) and not force_stage:
         lag_sec = int(last_seen - message_ts)
         logger.info(
             f"[router] drop late message user={user_id} lag={lag_sec}s "
             f"(threshold={LATE_DROP_SEC}s)"
         )
-        return
+        return _response(user_id)
 
-    # Зафиксируем текущие метки сразу (даже если блок упадёт — будет прогресс)
     update_state(user_id, {
         "last_msg_uid":  message_uid or last_uid,
         "last_msg_hash": msg_hash,
@@ -172,8 +189,10 @@ def route_message(
     # -------- вызов handler -------------------------------------------------
     try:
         if stage == "block4":
+            # block4 просит send_document и send_video
             handler(message_text, user_id, send_text_func, send_document_func, send_video_func)
-        elif stage == "block9":
+        elif stage == "block5":
+            # это бывший block9: нужен канал к владельцу
             handler(message_text, user_id, send_text_func, send_owner_text, send_owner_media)
         else:
             sig = inspect.signature(handler)
@@ -184,4 +203,4 @@ def route_message(
     except Exception as e:
         logger.exception(f"💥 Ошибка в блоке {stage} для {user_id}: {e}")
         send_text_func("Произошла техническая ошибка, попробуйте позже.")
-
+    return _response(user_id)
