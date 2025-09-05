@@ -14,3 +14,5 @@ SQLAlchemy>=1.4,<2.0
 psycopg2-binary>=2.9,<2.10
 pytest
 python-dotenv
+tzdata
+pytest-env

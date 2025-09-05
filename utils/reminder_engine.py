@@ -1,9 +1,12 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os, time, logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.jobstores.memory import MemoryJobStore
 from datetime import datetime, timezone
-from state.state import get_state          # тот же dict‑API
+from state.state import get_state
+from utils.whatsapp_senders import send_text          # тот же dict‑API
 
 if not logging.getLogger().handlers:
     h = logging.StreamHandler()          # stdout → Render console
@@ -18,14 +21,18 @@ LOCAL_DEV   = os.getenv("LOCAL_DEV", "0") == "1"
 TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0") == "1"
 
 # ---------- JobStore выбор ----------
-if LOCAL_DEV:
-    jobstores = {"default": MemoryJobStore()}
-    log.info("🟢 LOCAL_DEV=1 → MemoryJobStore (без БД)")
-else:
+def _build_jobstores():
+    """
+    Возвращает словарь jobstores без побочных эффектов.
+    В LOCAL_DEV всегда MemoryJobStore. В проде — SQLAlchemyJobStore/Fallback.
+    """
+    if LOCAL_DEV:
+        log.info("🟢 LOCAL_DEV=1 → MemoryJobStore (без БД)")
+        return {"default": MemoryJobStore()}
     try:
         # 1) Предпочтительно: готовый DSN
         pg_url = os.getenv("SUPABASE_DB_URL")
-        # 2) Fallback: попытаться построить из SUPABASE_URL (если есть)
+        # 2) Fallback: построить из SUPABASE_URL (если есть)
         if not pg_url:
             raw_supabase = os.getenv("SUPABASE_URL")
             if not raw_supabase:
@@ -36,24 +43,38 @@ else:
                 .replace(".supabase.co", ".supabase.co/postgres")
             )
         log.info(f"🔗 reminder_engine PG url → {pg_url.split('@')[-1].split('?')[0]}")
-        jobstores = {"default": SQLAlchemyJobStore(
+        return {"default": SQLAlchemyJobStore(
             url=pg_url,
             engine_options={"connect_args": {"connect_timeout": 5}},
         )}
     except Exception as e:
         log.exception(f"⚠️ SQLAlchemyJobStore init failed → MemoryJobStore: {e}")
-        jobstores = {"default": MemoryJobStore()}
+        return {"default": MemoryJobStore()}
 
 # ---------- APScheduler старт ----------
+jobstores = _build_jobstores()
 sched = BackgroundScheduler(jobstores=jobstores, timezone="UTC")
-if TEST_MODE:
-    log.info("🟡 TEST_MODE=1 → шедулер не стартуем")
-else:
+
+# ВНИМАНИЕ: не стартуем шедулер при импорте.
+# В проде зови start() из входной точки приложения.
+def start():
+    """
+    Запустить планировщик (для прод/стейджинг). В тестах и LOCAL_DEV не обязателен.
+    Идемпотентен: повторный вызов ничего не делает.
+    """
+    if getattr(start, "_started", False):
+        return
+    if TEST_MODE or LOCAL_DEV:
+        log.info("🟡 TEST/LOCAL_DEV → start() пропущен (шедулер не запускаем)")
+        start._started = False
+        return
     try:
         sched.start()
+        start._started = True
         log.info("⏰ reminder_engine started with %s jobstore", next(iter(jobstores)))
     except Exception as e:
         log.exception(f"💥 APScheduler start error: {e}")
+        start._started = False
 
 # ---------- универсальный планировщик ---------------------------
 #  accepted func_path formats
@@ -113,7 +134,6 @@ def execute_job(user_id: str, func_path: str):
         log.error(f"[reminder_engine] job {user_id}:{func_path} error: {e}")
 
 # ---------- лёгкая обёртка для send_text ------------------------
-from utils.whatsapp_senders import send_text
 def _send_func_factory(user_id):
     def _send(body):
         st = get_state(user_id) or {}

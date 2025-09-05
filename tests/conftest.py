@@ -1,8 +1,17 @@
 # tests/conftest.py
+# --- ensure project root on sys.path ---
+import os, sys
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+# --- end ---
+
 import pytest
 import types
 import utils.whatsapp_senders as wa
 from dotenv import load_dotenv
+from flask import Flask
+from routes.webhook_route import webhook_bp
 load_dotenv(override=True)
 
 
@@ -44,3 +53,18 @@ def fake_outbox(monkeypatch):
     monkeypatch.setattr(wa, "send_owner_resume", _send_owner_resume)
 
     return sent
+
+@pytest.fixture
+def client(monkeypatch):
+    # env для тестов
+    monkeypatch.setenv("VERIFY_TOKEN", "test_verify")  # для GET проверки
+    monkeypatch.setenv("META_APP_SECRET", "shhh")      # для HMAC подписи
+
+    app = Flask(__name__)
+    app.config.update(
+        TESTING=True,
+        VERIFY_TOKEN="test_verify",
+        META_APP_SECRET="shhh",
+    )
+    app.register_blueprint(webhook_bp)
+    return app.test_client()

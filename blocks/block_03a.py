@@ -196,35 +196,33 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
     match_date = None
     match_time = None
 
-    has_date = state.get("event_date")
-    has_time = state.get("event_time")
     combined_text = f"{prev_info}\n{message_text}".strip()
 
-    if has_date and has_time and not state.get("availability_reply_sent"):
+    # Пытаемся извлечь дату/время всегда, пока не отправлен availability_reply
+    if not state.get("availability_reply_sent"):
         date_prompt = f"""
-Сегодня: {client_request_date_str}
+        Сегодня: {client_request_date_str}
 
-Все сообщения клиента: "{combined_text}"
+        Все сообщения клиента: "{combined_text}"
 
-Определи, указана ли в сообщениях дата проведения мероприятия.
+        Определи, указана ли в сообщениях дата проведения мероприятия.
 
-Если указан только день и месяц — подставь текущий год: {current_year}.
-Если указан год — используй его.
-Формат: ГГГГ-ММ-ДД. Если даты нет — "нет даты".
-"""
+        Если указан только день и месяц — подставь текущий год: {current_year}.
+        Если указан год — используй его.
+        Формат: ГГГГ-ММ-ДД. Если даты нет — "нет даты".
+        """
         date_reply = ask_openai(date_prompt).strip()
         match_date = date_reply if date_reply.lower() != "нет даты" else None
         logger.info("Дата проведения мероприятия от ИИ %s", match_date)
 
         time_prompt = f"""
-Все сообщения клиента: "{combined_text}"
-Определи, указано ли в сообщениях время проведения мероприятия.
-Если да — формат ЧЧ:ММ. Иначе — "нет времени".
-"""
+        Все сообщения клиента: "{combined_text}"
+        Определи, указано ли в сообщениях время проведения мероприятия.
+        Если да — формат ЧЧ:ММ. Иначе — "нет времени".
+        """
         time_reply = ask_openai(time_prompt).strip()
         match_time = time_reply if time_reply.lower() != "нет времени" else None
         logger.info("Время проведения мероприятия от ИИ %s", match_time)
-
     # сохраним нормализованные поля для downstream
     if match_date:
         update_state(user_id, {"event_date_iso": _clean_date(match_date)})
@@ -268,6 +266,18 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
                 "summary_and_availability_sent": True,
                 "date_decision_flag": availability
             })
+             # Если слот свободен — фиксируем его в расписании
+            # 🔒 Пытаемся забронировать слот, если он свободен
+            if availability == "available":
+                try:
+                    import utils.schedule as schedule_utils
+                    if hasattr(schedule_utils, "reserve_slot"):
+                        success = schedule_utils.reserve_slot(date_iso, time_24)
+                        logger.info("Результат сохранения слота: %s", success)
+                    else:
+                        logger.info("reserve_slot отсутствует (вероятно, в тестовой заглушке) — пропускаем бронирование")
+                except Exception as e:
+                    logger.info("reserve_slot недоступен или упал: %s", e)
             if availability in ("need_handover", "occupied"):
                 update_state(user_id, {
                     "handover_reason": "early_date_or_busy",
@@ -312,6 +322,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             "summary_sent": False,
             # ВАЖНО: не трогаем availability_reply_sent
         })
+        plan(user_id, "blocks.block_03a:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
         return
 
     # 5) Если 3 попытки — решаем, что дальше
@@ -366,6 +377,17 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
                 "summary_and_availability_sent": True,
                 "date_decision_flag": availability
             })
+             # 🔒 Пытаемся забронировать слот, если он свободен (fallback)
+            if availability == "available":
+                try:
+                    import utils.schedule as schedule_utils
+                    if hasattr(schedule_utils, "reserve_slot"):
+                        success = schedule_utils.reserve_slot(date_iso, time_24)
+                        logger.info("[fallback] Результат сохранения слота: %s", success)
+                    else:
+                        logger.info("[fallback] reserve_slot отсутствует (тестовая заглушка) — пропускаем бронирование")
+                except Exception as e:
+                    logger.info("[fallback] reserve_slot недоступен или упал: %s", e)
             if availability in ("need_handover", "occupied"):
                 update_state(user_id, {
                     "handover_reason": "early_date_or_busy",
@@ -425,17 +447,16 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     send_reply_func(reply)
 
     update_state(user_id, {"stage": "block3a", "last_message_ts": time.time()})
-
-    # финальный таймер — ещё 4 ч тишины → block5
-    def finalize_if_still_silent():
-        from router import route_message
-        state = get_state(user_id)
-        if not state or state.get("stage") != "block3a":
-            return
-        update_state(user_id, {
-            "handover_reason": "no_response_after_3_2",
-            "scenario_stage_at_handover": "block3"
-        })
-        route_message("", user_id, force_stage="block5")
-
     plan(user_id, "blocks.block_03a:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
+    
+    # финальный таймер — ещё 4 ч тишины → block5
+def finalize_if_still_silent(user_id, send_reply_func):
+    from router import route_message
+    state = get_state(user_id)
+    if not state or state.get("stage") != "block3a":
+        return
+    update_state(user_id, {
+        "handover_reason": "no_response_after_3_2",
+        "scenario_stage_at_handover": "block3"
+    })
+    route_message("", user_id, force_stage="block5")

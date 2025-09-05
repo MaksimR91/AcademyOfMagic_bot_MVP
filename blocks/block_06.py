@@ -1,4 +1,6 @@
 # blocks/block_06.py
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os
 import time
 from utils.reminder_engine import plan

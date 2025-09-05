@@ -1,4 +1,6 @@
 # utils/token_manager.py
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os, time, threading, requests
 from logger import logger
 from utils.supabase_token import load_token_from_supabase, save_token_to_supabase

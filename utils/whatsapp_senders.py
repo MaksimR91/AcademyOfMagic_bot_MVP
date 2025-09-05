@@ -1,4 +1,6 @@
-import os, requests, logging
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
+import os, requests, logging, json
 from utils.token_manager import get_token
 
 logger = logging.getLogger(__name__)

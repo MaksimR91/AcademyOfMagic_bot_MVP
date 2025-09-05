@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 from flask import Blueprint, render_template, request, abort
 from logger import logger
 from utils.token_manager import get_token, set_token, save_token

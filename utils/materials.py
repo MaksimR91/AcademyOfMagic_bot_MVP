@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os
 import os.path as op
 import boto3

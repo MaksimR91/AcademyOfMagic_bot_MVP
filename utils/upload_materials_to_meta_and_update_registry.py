@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os, json, requests, time, threading
 from datetime import datetime, timedelta
 from tempfile import TemporaryDirectory

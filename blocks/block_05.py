@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import time
 from utils.s3_upload import upload_image
 import requests, os

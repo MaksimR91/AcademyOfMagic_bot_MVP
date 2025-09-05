@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os, time, threading, requests
 from openai import OpenAI
 from pydub import AudioSegment

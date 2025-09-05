@@ -1,6 +1,9 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os
 import json
 import boto3
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -11,6 +14,7 @@ AWS_ACCESS_KEY_ID = os.getenv("YANDEX_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("YANDEX_SECRET_ACCESS_KEY")
 ENDPOINT_URL = "https://storage.yandexcloud.net"
 REGION_NAME = "ru-central1"
+TZ = ZoneInfo("Asia/Atyrau")
 
 # ==== Конфигурация клиента ====
 s3_config = Config(connect_timeout=5, read_timeout=10)
@@ -55,7 +59,7 @@ def check_date_availability(date_str, time_str, schedule_list):
     except ValueError:
         return "invalid_format"
 
-    now = datetime.now()
+    now = datetime.now(TZ)
     tomorrow = now + timedelta(days=1)
 
     if request_datetime.date() in (now.date(), tomorrow.date()):
@@ -103,3 +107,13 @@ def reserve_slot(date_str: str, time_str: str) -> bool:
         print(f"[schedule] reserve_slot S3 error: {e}")
         return False
 
+def get_availability(date_str: str, time_str: str) -> str:
+    """
+    Обёртка: тянет слоты из S3 и применяет правило.
+    При ошибке S3 — по ТЗ возвращаем 'need_handover'.
+    """
+    try:
+        slots = load_schedule_from_s3()
+    except Exception:
+        return "need_handover"
+    return check_date_availability(date_str, time_str, slots)

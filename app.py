@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import gevent.monkey
 gevent.monkey.patch_all(subprocess=True, ssl=True)
 from dotenv import load_dotenv
@@ -145,6 +147,12 @@ def create_app():
         start_memory_cleanup_loop()
     except Exception as e:
         logger.warning(f"⚠️ Не удалось запустить memory_cleanup_loop: {e}")
+
+    # Конфиг для вебхука (юнит-тесты переопределяют эти ключи у app.config)
+    app.config.update(
+        VERIFY_TOKEN=VERIFY_TOKEN,
+        META_APP_SECRET=META_APP_SECRET,
+    )
 
     return app
 

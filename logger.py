@@ -1,4 +1,6 @@
 # logger.py  – минималистично, но стабильно
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os, sys, logging
 from logging.handlers import TimedRotatingFileHandler
 

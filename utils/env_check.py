@@ -1,3 +1,5 @@
+from utils.env_loader import ensure_env_loaded
+ensure_env_loaded()
 import os, logging
 
 CRITICAL_VARS = [
@@ -18,6 +20,9 @@ def _missing(keys):              # helper
     return [k for k in keys if not os.getenv(k)]
 
 def check_env():
+    # 👇 выводим путь загруженного .env для отладки
+    print("ENV loaded from:", os.getenv("_ENV_DEBUG_PATH"))
+
     miss_crit = _missing(CRITICAL_VARS)
     miss_warn = _missing(WARNING_VARS)
 
@@ -25,3 +30,6 @@ def check_env():
         logging.critical("🚨 Missing ENV (critical): %s", ", ".join(miss_crit))
     if miss_warn:
         logging.warning("⚠️ Missing ENV (warning): %s", ", ".join(miss_warn))
+
+if __name__ == "__main__":
+    check_env()
