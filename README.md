@@ -21,6 +21,9 @@ npx cloudflared tunnel --url http://127.0.0.1:5000 (делать в отдель
 # Интеграционный тест Яндекс Cloud S3
 pytest -vv tests/integration/test_schedule_s3_integration.py -s
 
+# Интеграционный тест Meta API
+pytest -q tests/integration/test_waba_io.py -s
+
 # Дымо-тест (тест на падение при старте)
 pytest -vv -ra tests/unit/test_router_smoke.py -s
 
@@ -35,6 +38,9 @@ pytest -q tests/unit/test_classification.py -s
 
 # Тест повторных касаний
 pytest -q tests/unit/test_reminders.py -s
+
+# Тест автоопределения языка обращения
+pytest -q tests/unit/test_lang_detect.py -s
 
 # Собрать тесты, но не выполнять
 pytest --collect-only -q
@@ -76,9 +82,17 @@ pytest -q -k "webhook or reminders" -s
            token.html - шаблон админки для обновления токена WhatsApp;
 - tests/ - папка для автотестов для проверки функциональности проекта:
            integration/ - папка для хранения интеграционных тестов:
+                          test_24h_window.py - файл с тестами отправки сообщений только внутри "окна" 24 часа от последнего входящего сообщения клиента (требование Meta);
+                          test_handover_owner.py - файл с тестами корректной передачи управления человеку во всех описанных в ТЗ ситуациях;
+                          test_materials_end2end.py - файл с интеграционными тестами получения материалов о шоу из Яндекс Cloud S3;
+                          test_notion_upsert.py - файл с тестами передачи данных в CRM;
+                          test_openai_gpt.py - файл с тестами интеграции с OpenAI API;
+                          test_openai_whisper.py - файл с тестами интеграции с OpenAI Whisper для транскрибации голосовых сообщений;
                           test_schedule_s3_integration.py - файл с тестами интеграции с Яндекс Cloud S3;
+                          test_waba_io.py - файл с тестами интеграции с Meta API для приема входящих и отправки исходящих сообщений.
            unit/ - папка с тестами отдельных функций и модулей:
                    test_classification.py - файл с тестами классификации типа шоу в блоке 2;
+                   test_lang_detect.py - файл с тестами автоопределения языка обращения;
                    test_reminders.py - файл с тестами повторных касаний в блоках 2 и 3;
                    test_router_smoke.py - файл с дымо-тестами на падения при старте;
                    test_schedule_rule.py - файл с тестами ведения и расписания выступлений и проверки доступности слотов;
@@ -94,6 +108,7 @@ pytest -q -k "webhook or reminders" -s
            env_loader.py - корректная загрузка переменных окружения из .env;
            incoming_message.py - функции обработки входящих сообщений разного типа;
            lang_detect.py - автоматическое определение языка обращения;
+           lang_prompt.py - формирование ответа клиенту на языке обращения;
            materials.py - обработка материалов о выступлении, загруженных в Яндекс Cloud S3 и подготовка к отправке клиенту;
            outgoing_message.py - отправка исходящих сообщений в Meta API;
            process_and_compress_videos_from_s3.py - автоматическая загрузка видео из Яндекс Cloud S3, сжатие до требуемого Meta размера и сохранение обратно в Яндекс Cloud S3;
@@ -165,6 +180,7 @@ Bot_MVP/
     env_loader.py
     incoming_message.py
     lang_detect.py
+    lang_prompt.py
     materials.py 
     outgoing_message.py
     process_and_compress_videos_from_s3.py
@@ -193,9 +209,17 @@ Bot_MVP/
   tests/
     conftest.py
     integration/
+      test_24h_window.py
+      test_handover_owner.py
+      test_materials_end2end.py
+      test_notion_upsert.py
+      test_openai_gpt.py
+      test_openai_whisper.py
       test_schedule_s3_integration.py
+      test_waba_io.py
     unit/
       test_classification.py
+      test_lang_detect.py
       test_reminders.py
       test_router_smoke.py
       test_schedule_rule.py

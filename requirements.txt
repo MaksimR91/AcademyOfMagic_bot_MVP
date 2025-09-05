@@ -16,3 +16,4 @@ pytest
 python-dotenv
 tzdata
 pytest-env
+langdetect
