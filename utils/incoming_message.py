@@ -7,9 +7,21 @@ from logger import logger
 from state.state import save_if_absent, get_state, update_state
 from utils.token_manager import get_token
 from router import route_message
-from utils.outgoing_message import send_text_message
+import utils.outgoing_message as outgoing
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+try:
+    import boto3
+    from botocore.config import Config as BotoConfig
+except Exception:
+    boto3 = None
+    BotoConfig = None
 
 OPENAI_API_KEY = os.getenv("OPENAI_APIKEY")
+S3_BUCKET = os.getenv("YANDEX_BUCKET", "magicacademylogsars")
+S3_ENDPOINT = os.getenv("YANDEX_ENDPOINT", "https://storage.yandexcloud.net")
+S3_REGION = os.getenv("YANDEX_REGION", "ru-central1")
 
 def handle_message(message, phone_number_id, bot_display_number, contacts):
     from_number = message.get("from")
@@ -55,6 +67,7 @@ def handle_audio_async(message, phone_number_id, normalized_number, name):
 
         media_resp = requests.get(media_url, headers=headers, timeout=30)
         media_resp.raise_for_status()
+        # локальный путь
         audio_path = "/tmp/audio.ogg"
         with open(audio_path, "wb") as f:
             f.write(media_resp.content)
@@ -65,8 +78,11 @@ def handle_audio_async(message, phone_number_id, normalized_number, name):
 
         if duration_sec > 60:
             logger.warning("⚠️ Аудио превышает 60 секунд")
-            send_text_message(phone_number_id, normalized_number,
-                              "Пожалуйста, пришлите голосовое сообщение не длиннее 1 минуты.")
+            outgoing.send_text_message(
+                phone_number_id,
+                normalized_number,
+                "Голосовое длиннее 60 сек. Пришлите короче (до минуты) или напишите текст."
+            )
             return
         client = OpenAI(api_key=OPENAI_API_KEY)
         with open(audio_path, "rb") as audio_file:
@@ -75,8 +91,20 @@ def handle_audio_async(message, phone_number_id, normalized_number, name):
                 file=audio_file,
                 response_format="text"
             )
-        logger.info(f"📝 Распознано: {transcript}")
-        text = transcript.strip()
+        # у SDK .text уже строка; при response_format="text" resp — тоже строка
+        text = getattr(transcript, "text", transcript)
+        logger.info(f"📝 Распознано: {text}")
+        text = (text or "").strip()
+
+        # сохраняем .ogg + .txt в S3 (если настроено)
+        try:
+            _save_voice_to_s3(
+                raw_bytes=media_resp.content,
+                transcript_text=text,
+                wamid=message.get("id") or audio_id
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось сохранить голосовое в S3: {e}")
         if text:
             message_uid = message.get("id")
             message_ts = int(message.get("timestamp", "0") or 0)
@@ -84,6 +112,15 @@ def handle_audio_async(message, phone_number_id, normalized_number, name):
 
     except Exception as e:
         logger.error(f"❌ Ошибка фоновой обработки аудио: {e}")
+        # По ТЗ: плохое качество → попросить текст
+        try:
+            outgoing.send_text_message(
+                phone_number_id,
+                normalized_number,
+                "Не получилось распознать голосовое. Напишите текст или пришлите короткое сообщение (до 60 сек)."
+            )
+        except Exception as ee:
+            logger.warning(f"Не удалось отправить уведомление пользователю после ошибки: {ee}")
 
 def handle_media_async(message, phone_number_id, user_id):
     """MVP: медиа не обрабатываем. Идемпотентно фиксируем входящее и отвечаем текстом."""
@@ -116,10 +153,11 @@ def handle_media_async(message, phone_number_id, user_id):
 
     # вежливый ответ
     try:
-        send_text_message(
-            phone_number_id, user_id,
+        outgoing.send_text_message(
+            phone_number_id,
+            user_id,
             "Пока принимаю только текст и короткие голосовые. Пришлите текст."
-        )
+         )
     except Exception as e:
         logger.warning(f"[media:MVP] не удалось отправить ответ: {e}")
 
@@ -169,8 +207,11 @@ def process_text_message(text: str,
         route_message(text, normalized_number, client_name=name)
     except Exception as e:
         logger.exception(f"💥 Ошибка route_message для {normalized_number}: {e}")
-        send_text_message(phone_number_id, normalized_number,
-                          "Техническая ошибка. Попробуйте позже.")
+        outgoing.send_text_message(
+            phone_number_id,
+            normalized_number,
+            "Техническая ошибка. Попробуйте позже."
+        )
 
 def normalize_for_meta(number):
     if number.startswith('77'):
@@ -181,3 +222,29 @@ def normalize_for_meta(number):
 
 def handle_status(status):
     logger.info("📥 Статус: %s", status)
+
+def _save_voice_to_s3(raw_bytes: bytes, transcript_text: str, wamid: str) -> None:
+    """
+    Кладём .ogg и .txt на 30 дней: s3://magicacademylogsars/voice/{YYYY-MM-DD}/{wamid}.ogg|.txt
+    Дата — по Asia/Atyrau.
+    """
+    if not boto3 or not os.getenv("YANDEX_ACCESS_KEY_ID") or not os.getenv("YANDEX_SECRET_ACCESS_KEY"):
+        logger.info("S3 не настроен (YANDEX_* отсутствуют) — пропускаем сохранение голосового")
+        return
+    tz = ZoneInfo("Asia/Atyrau")
+    day = datetime.now(tz).strftime("%Y-%m-%d")
+    key_ogg = f"voice/{day}/{wamid}.ogg"
+    key_txt = f"voice/{day}/{wamid}.txt"
+
+    s3 = boto3.client(
+        "s3",
+        region_name=S3_REGION,
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=os.getenv("YANDEX_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("YANDEX_SECRET_ACCESS_KEY"),
+        config=BotoConfig(connect_timeout=5, read_timeout=10),
+    )
+    s3.put_object(Bucket=S3_BUCKET, Key=key_ogg, Body=raw_bytes, ContentType="audio/ogg")
+    s3.put_object(Bucket=S3_BUCKET, Key=key_txt, Body=(transcript_text or "").encode("utf-8"),
+                  ContentType="text/plain; charset=utf-8")
+    logger.info("💾 Сохранено голосовое в S3: %s, %s", key_ogg, key_txt)

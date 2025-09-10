@@ -1,0 +1,3 @@
+# всегда текст, всегда LF, кодировка UTF-8 в рабочем дереве
+prompts/*.txt  text eol=lf working-tree-encoding=UTF-8
+*.txt          text eol=lf

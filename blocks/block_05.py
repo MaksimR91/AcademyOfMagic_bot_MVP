@@ -1,7 +1,6 @@
 from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import time
-from utils.s3_upload import upload_image
 import requests, os
 from utils.ask_openai import ask_openai
 from state.state import get_state, update_state
@@ -14,6 +13,7 @@ from logger import logger
 
 GLOBAL_PROMPT = "prompts/global_prompt.txt"
 STAGE_PROMPT  = "prompts/block05_prompt.txt"
+OWNER_WA_ID   = os.getenv("OWNER_WA_ID")  # в тестах может быть пусто
 
 # ---------------------------------------------------------------------------
 def _load(p: str) -> str:
@@ -41,7 +41,7 @@ def handle_block5(
     if not st.get("scenario_stage_at_handover"):
         update_state(user_id, {"scenario_stage_at_handover": st.get("stage")})
     # --- 1. Отправка резюме Арсению (однократно) ---------------------
-    logger.info("[block5] arseni_notified flag: %s", st.get("arseniy_notified"))
+    logger.info("[block5] arseniy_notified flag: %s", st.get("arseniy_notified"))
     if not st.get("arseniy_notified"):
         reason  = st.get("handover_reason", "")
         comment = _reason_to_comment(reason)
@@ -63,7 +63,7 @@ def handle_block5(
             _forward_and_persist_photo(
                 st["celebrant_photo_id"],
                 user_id,
-                send_image,          # отправляем фото Арсению
+                _send_owner_image,   # враппер с фиксированной сигнатурой
             )
 
     # --- 2. Сообщение клиенту (если ещё не уведомили) ---------------
@@ -184,7 +184,19 @@ def _reason_to_comment(reason: str) -> str:
         "reserve_failed": "Не удалось подтвердить слот расписания.",
     }
     return mapping.get(reason, reason or "")
-# ---------------------------------------------------------------------------
+
+# враппер: приводит сигнатуру к send_owner_media(media_id)
+def _send_owner_image(media_id: str) -> None:
+    """
+    Отправляет изображение Арсению, скрывая параметр получателя.
+    В тестах OWNER_WA_ID может отсутствовать — используем безопасный дефолт.
+    """
+    to = OWNER_WA_ID or "OWNER"
+    try:
+        send_image(to, media_id)
+    except Exception as e:
+       logger.warning(f"[block5] send_image fail: {e}")
+
 # ⬇︎ помощник: скачиваем из WhatsApp, кладём в S3, шлём Арсению
 def _forward_and_persist_photo(media_id: str, user_id: str, send_owner_media):
     """
@@ -223,7 +235,10 @@ def _forward_and_persist_photo(media_id: str, user_id: str, send_owner_media):
 
     # --- 3. кладём в S3 -------------------------------------------
     try:
-        perm_url = upload_image(img_resp.content)
+        # импорт внутри функции, чтобы моки через sys.modules подхватывались
+        from importlib import import_module
+        s3 = import_module("utils.s3_upload")
+        perm_url = s3.upload_image(img_resp.content)
         update_state(user_id, {"celebrant_photo_url": perm_url})
         logger.info(f"[block5] photo uploaded → {perm_url} user={user_id}")
     except Exception as e:

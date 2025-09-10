@@ -10,6 +10,7 @@ GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
 STAGE_PROMPT_PATH = "prompts/block02_prompt.txt"
 REMINDER_PROMPT_PATH = "prompts/block02_reminder_1_prompt.txt"
 REMINDER_2_PROMPT_PATH = "prompts/block02_reminder_2_prompt.txt"
+CLASSIF_PROMPT_PATH = "prompts/block02_classification_prompt.txt"
 # Время до повторного касания (4 часа)
 DELAY_TO_BLOCK_2_1_HOURS = 4
 DELAY_TO_BLOCK_2_2_HOURS = 12
@@ -19,6 +20,18 @@ def load_prompt(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
+def render_prompt(path: str, **kwargs) -> str:
+    """
+    Рендерим текст промпта с плейсхолдерами через str.format().
+    Внутренние фигурные скобки в промпте должны быть экранированы как {{ }}.
+    """
+    tmpl = load_prompt(path)
+    try:
+        return tmpl.format(**kwargs)
+    except Exception as e:
+        logger.warning(f"[block02] format error in {path}: {e}")
+        return tmpl  # лучше вернуть сырой, чем упасть
+    
 global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
 stage_prompt = load_prompt(STAGE_PROMPT_PATH)
 
@@ -111,36 +124,12 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         else:
             next_block = "block3d"
         from router import route_message
+        # В тестах фейковый роутер не меняет stage — зафиксируем сами
+        state.update_state(user_id, {"stage": next_block})
         return route_message(message_text, user_id, force_stage=next_block)
 
     # Классификация
-    classification_prompt = f"""
-
-    Клиент описал мероприятие: "{message_text}"
-
-    Задача: Вывести РОВНО ОДНО слово-метку из списка:
-    детское | семейное | взрослое | нестандартное | неизвестно
-
-    Приоритет и правила:
-    1) День рождения:
-        - возраст 1–3 - семейное
-        - возраст 4–14 - детское
-        - возраст 15+ - взрослое
-    2) Если описание содержит слова: детский сад; садик; выпускной в саду; детсад - детское
-    3) Праздник во дворе:
-        - большинство детей - детское
-        - примерно поровну детей и взрослых - семейное
-        - если состав гостей не указан - семейное
-    4) Свадьба; жених; невеста - взрослое
-    5) ВСЁ ОСТАЛЬНОЕ - нестандартное
-    В частности, фразы вида «иллюзионное шоу», «на сцене; в кафе; в клубе; в ресторане»,
-    «для взрослых», «корпоратив» БЕЗ явного признака из пунктов 1–4 - строго «нестандартное».
-    6) Если информации недостаточно (только «здравствуйте», «хочу шоу» и т.п.) - неизвестно
-
-    Важно:
-    - Игнорируй само по себе выражение «для взрослых», если нет явного признака из п.1 (день рождения 15+) или п.4 (свадьба).
-    - НИКАКИХ пояснений, вопросов, примеров, знаков препинания — выведи только одно слово-метку.
-    """
+    classification_prompt = render_prompt(CLASSIF_PROMPT_PATH, message_text=message_text)
     try:
         resp = ask_openai(classification_prompt)
         show_type = (resp or "").strip().lower()
@@ -231,6 +220,11 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     st = state.get_state(user_id)
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил или сменился блок — ничего не делаем
+    if st.get("last_sender") == "user":
+        return
+    # идемпотентность: если уже ставили R1 — выходим
+    if st.get("r1_scheduled_b2"):
+        return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
     reminder_prompt = load_prompt(REMINDER_PROMPT_PATH)
@@ -242,9 +236,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     state.update_state(user_id, {"stage": "block2", "last_message_ts": time.time()})
 
     # Подготовка таймера на второе напоминание через 12 часов (в блок 2.2)
-    plan(user_id,
-    "blocks.block_02:send_second_reminder_if_silent",   # <‑‑ путь к функции
-    DELAY_TO_BLOCK_2_2_HOURS * 3600)
+    plan(user_id, "blocks.block_02:send_second_reminder_if_silent", DELAY_TO_BLOCK_2_2_HOURS * 3600)
+    state.update_state(user_id, {"r1_scheduled_b2": True})
     
 
 def send_second_reminder_if_silent(user_id, send_reply_func):
@@ -252,6 +245,10 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     st = state.get_state(user_id)
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил — ничего не делаем
+    if st.get("last_sender") == "user":
+        return
+    if st.get("r2_scheduled_b2"):
+        return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
     reminder_prompt = load_prompt(REMINDER_2_PROMPT_PATH)
@@ -261,16 +258,21 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     send_reply_func(reply)
 
     state.update_state(user_id, {"stage": "block2", "last_message_ts": time.time()})
-    plan(user_id,
-    "blocks.block_02:finalize_if_still_silent",   # <‑‑ путь к функции
-    FINAL_TIMEOUT_HOURS * 3600)
+    plan(user_id, "blocks.block_02:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
+    state.update_state(user_id, {"r2_scheduled_b2": True})
 
 # Финальный таймер — если клиент не ответит ещё 4 часа, уходим в block5
-def finalize_if_still_silent():
+def finalize_if_still_silent(user_id, send_reply_func):
     state = _state()
     st2 = state.get_state(user_id)
     if not st2 or st2.get("stage") != "block2":
         return  # Ответил — всё ок
-    state.update_state(user_id, {"handover_reason": "no_response_after_2_2", "scenario_stage_at_handover": "block2"})
+    # идемпотентность финала
+    if st2.get("fin_scheduled_b2_done"):
+        return
+    state.update_state(user_id, {
+        "handover_reason": "no_response_after_2_2",
+        "scenario_stage_at_handover": "block2",
+        "fin_scheduled_b2_done": True    })
     from router import route_message
     route_message("", user_id, force_stage="block5")

@@ -32,7 +32,9 @@ BOOKING_PATTERNS = [
     r"\bнанять\b.*\b(арсени\w*|фокусник|иллюзионист)\b",
     r"\bхочу\s+(шоу|выступлени\w)\b.*\b(арсени\w*)\b",
     r"\b(заказ|бронировани\w)\b.*\b(арсени\w*)\b",
-    r"\b(book|hire)\b.*\b(arsen\w*)\b",
+    r"\b(book|hire)\b.*\b(arsen\w*)\b",                    # en + Arseniy
+    r"\b(book|hire)\b.*\b(magician|illusionist)\b",        # en generic
+    r"\b(need|want|would like)\s+to\s+(book|hire)\b.*\b(magician|illusionist)\b",
     r"\bнужен\b.*\b(фокусник|иллюзионист|арсени\w*)\b",
 ]
 
@@ -86,4 +88,3 @@ def wants_handover_ai(user_message: str) -> bool:
         return False  # безопасный дефолт
 
     return resp.startswith("да")
-

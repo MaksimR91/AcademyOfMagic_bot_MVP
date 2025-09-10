@@ -1,6 +1,7 @@
 # tests/conftest.py
 # --- ensure project root on sys.path ---
 import os, sys
+from pathlib import Path
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -13,6 +14,23 @@ from dotenv import load_dotenv
 from flask import Flask
 from routes.webhook_route import webhook_bp
 load_dotenv(override=True)
+# тексты-заглушки, которых быть не должно в реальных промптах
+STUB_MARKERS = {"BLOCK2","GLOBAL","R1","R2","R1_3X","R2_3X","B3A","B3B","B3C","B3A_DATA","B3B_DATA","B3C_DATA"}
+REQUIRED_PROMPTS = [
+    "prompts/global_prompt.txt",
+    "prompts/block02_prompt.txt",
+    "prompts/block02_classification_prompt.txt",
+    "prompts/block02_reminder_1_prompt.txt",
+    "prompts/block02_reminder_2_prompt.txt",
+    "prompts/block03_reminder_1_prompt.txt",
+    "prompts/block03_reminder_2_prompt.txt",
+    "prompts/block03a_prompt.txt",
+    "prompts/block03a_data_prompt.txt",
+    "prompts/block03b_prompt.txt",
+    "prompts/block03b_data_prompt.txt",
+    "prompts/block03c_prompt.txt",
+    "prompts/block03c_data_prompt.txt",
+]
 
 
 @pytest.fixture
@@ -53,6 +71,26 @@ def fake_outbox(monkeypatch):
     monkeypatch.setattr(wa, "send_owner_resume", _send_owner_resume)
 
     return sent
+
+@pytest.fixture(autouse=True)
+def ensure_prompts_exist_and_real():
+    """
+    Не создаём и не перезаписываем файлы.
+    Если промпт отсутствует или это заглушка — валим тест.
+    """
+    # каталог должен существовать
+    Path("prompts").mkdir(exist_ok=True)
+
+    def _assert_exists_and_not_stub(path: str):
+        p = Path(path)
+        if not p.exists():
+            raise AssertionError(f"{path} отсутствует. В репозитории должны быть реальные промпты.")
+        txt = p.read_text(encoding="utf-8", errors="ignore").strip()
+        if txt in STUB_MARKERS:
+            raise AssertionError(f"{path} содержит заглушку («{txt}»). Восстанови реальный промпт.")
+
+    for prom in REQUIRED_PROMPTS:
+        _assert_exists_and_not_stub(prom)
 
 @pytest.fixture
 def client(monkeypatch):

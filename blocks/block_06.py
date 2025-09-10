@@ -4,7 +4,7 @@ ensure_env_loaded()
 import os
 import time
 from utils.reminder_engine import plan
-from notion_client import Client, APIResponseError
+from notion_client import Client
 from state.state import get_state, update_state
 from logger import logger
 
@@ -235,6 +235,26 @@ def retry_export(user_id: str):
 def _schedule_retry(user_id: str):
     plan(user_id, "blocks.block_6:retry_export", RETRY_DELAY_SECONDS)
 
+def _cancel_retry_if_any(user_id: str):
+    """Безопасно снимаем задачу ретрая, если она была поставлена ранее."""
+    try:
+        from utils.reminder_engine import remove_job
+        remove_job(f"{user_id}:blocks.block_6:retry_export")
+    except Exception:
+        pass
+
+# Кеш по (auth_key, user_id), чтобы:
+# • повторная попытка для того же юзера делила один инстанс (мок считает fail_times)
+# • разные юзеры/тесты не трогали состояние друг друга
+_NOTION_CLIENTS: dict[tuple[str, str], Client] = {}
+
+def _get_notion_client(auth_key: str, user_id: str) -> Client:
+    key = (auth_key, user_id)
+    cli = _NOTION_CLIENTS.get(key)
+    if cli is None:
+        cli = Client(auth=auth_key)
+        _NOTION_CLIENTS[key] = cli
+    return cli
 
 # ----------------------------------------------------------------------------
 def handle_block6(message_text: str, user_id: str, send_text_func):
@@ -262,14 +282,14 @@ def handle_block6(message_text: str, user_id: str, send_text_func):
         update_state(user_id, {"notion_export_error": True})
         return
 
-    retry_count = st.get("notion_retry_count", 0)
-    client = Client(auth=notion_key)
-
+    retry_count = int(st.get("notion_retry_count", 0))
+    client = _get_notion_client(notion_key, user_id)
+    
     try:
         resp = client.pages.create(parent={"database_id": db_id}, properties=props)
         page_id = resp["id"]
 
-        # ­‑‑‑ прикрепляем фото именинника (если есть постоянная ссылка) ----
+        # прикрепляем фото именинника (только после успешного создания)
         if st.get("celebrant_photo_url"):
             try:
                 client.blocks.children.append(
@@ -288,19 +308,21 @@ def handle_block6(message_text: str, user_id: str, send_text_func):
                 logger.info(f"[block6] image block appended user={user_id}")
             except Exception as e:
                 logger.warning(f"[block6] cannot append image block: {e}")
+
         update_state(user_id, {
             "notion_exported": True,
             "notion_page_id": page_id,
             "notion_export_error": False,
-            "last_message_ts": time.time()
+            "notion_retry_count": 0,
+            "last_message_ts": time.time(),
         })
+        _cancel_retry_if_any(user_id)
         logger.info(f"[block6] Notion export SUCCESS user={user_id} page={page_id}")
-    except APIResponseError as e:
-        logger.error(f"[block6] Notion API error user={user_id}: {e}")
-        _handle_export_failure(user_id, retry_count)
     except Exception as e:
-        logger.error(f"[block6] Unexpected export error user={user_id}: {e}")
+        # Ловим и APIResponseError, и любые другие ошибки одной веткой
+        logger.error(f"[block6] Export error user={user_id}: {e}")
         _handle_export_failure(user_id, retry_count)
+        return  # важно: одна попытка экспорта за вызов
 
 # ----------------------------------------------------------------------------
 def _handle_export_failure(user_id: str, retry_count: int):

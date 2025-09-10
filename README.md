@@ -24,6 +24,24 @@ pytest -vv tests/integration/test_schedule_s3_integration.py -s
 # Интеграционный тест Meta API
 pytest -q tests/integration/test_waba_io.py -s
 
+# Интеграционный тест OpenAI
+pytest -q tests/integration/test_openai_gpt.py -s
+
+# Тест соблюдения окна Meta 24 часа
+pytest -q tests/integration/test_24h_window.py -s
+
+# Тест передачи данных и управления владельцу
+pytest -q tests/integration/test_handover_owner.py -s
+
+# Интеграционный тест работы с материалами 
+pytest -q tests/integration/test_materials_end2end.py -s
+
+# Интеграционный тест передачи данных в Notion (CRM)
+pytest -q tests/integration/test_notion_upsert.py -s
+
+# Интеграционный тест обработчика голосовых сообщений Whisper
+pytest -q tests/integration/test_openai_whisper.py -s
+
 # Дымо-тест (тест на падение при старте)
 pytest -vv -ra tests/unit/test_router_smoke.py -s
 
@@ -41,6 +59,15 @@ pytest -q tests/unit/test_reminders.py -s
 
 # Тест автоопределения языка обращения
 pytest -q tests/unit/test_lang_detect.py -s
+
+# Тест логики передачи управления человеку
+pytest -q tests/unit/test_handover_logic.py -s
+
+# Тест логики работы с голосовыми сообщениями
+pytest -q tests/unit/test_voice_flow.py -s
+
+# Тест логики работы с входящими и исходящими сообщениями
+pytest -q tests/unit/test_waba_io.py -s
 
 # Собрать тесты, но не выполнять
 pytest --collect-only -q
@@ -63,6 +90,8 @@ pytest -q -k "webhook or reminders" -s
 - requirements.txt - перечисление зависимостей, используемых в проекте;
 - DEVLOG.md - журнал с описанием процесса разработки;
 - README.md - руководство по работе с проектом;
+-.editorconfig - файл с правилами для редактора кода;
+-.gitattributes - правила для репозитория Git;
 
 - blocks/ - папка с блоками, реализующими логику работы соответствующих этапов проекта;
 - prompts/ - папка с промптами: глобальный, промпты этапов сценария, промпты повторных касаний, промпты сбора данных на этапе 3;
@@ -89,13 +118,15 @@ pytest -q -k "webhook or reminders" -s
                           test_openai_gpt.py - файл с тестами интеграции с OpenAI API;
                           test_openai_whisper.py - файл с тестами интеграции с OpenAI Whisper для транскрибации голосовых сообщений;
                           test_schedule_s3_integration.py - файл с тестами интеграции с Яндекс Cloud S3;
-                          test_waba_io.py - файл с тестами интеграции с Meta API для приема входящих и отправки исходящих сообщений.
            unit/ - папка с тестами отдельных функций и модулей:
                    test_classification.py - файл с тестами классификации типа шоу в блоке 2;
+                   test_handover_logic.py - файл с тестами логики передачи управления человеку;
                    test_lang_detect.py - файл с тестами автоопределения языка обращения;
                    test_reminders.py - файл с тестами повторных касаний в блоках 2 и 3;
                    test_router_smoke.py - файл с дымо-тестами на падения при старте;
                    test_schedule_rule.py - файл с тестами ведения и расписания выступлений и проверки доступности слотов;
+                   test_voice_flow.py - файл с тестами логики работы с голосовыми сообщениями;
+                   test_waba_io.py - файл с тестами интеграции с Meta API для приема входящих и отправки исходящих сообщений;
                    test_webhook_security.py - файл с тестами безопасности вебхука;
             conftest.py - спциальный файл для хранения фикстур для тестов;
 - utils/ - папка для хранения файлов, реализующих отдельные функции бота:
@@ -136,6 +167,8 @@ Bot_MVP/
   .gitignore
   DEVLOG.md
   README.md
+  .editorconfig
+  .gitattributes
 
   state/
     state.py
@@ -155,8 +188,10 @@ Bot_MVP/
   prompts/
     block01_prompt.txt
     block02_prompt.txt
+    block02_classification_prompt.txt
     block02_reminder_1_prompt.txt
     block02_reminder_2_prompt.txt
+    block03_availability_prompt.txt
     block03_reminder_1_prompt.txt
     block03_reminder_2_prompt.txt
     block03a_prompt.txt
@@ -216,13 +251,14 @@ Bot_MVP/
       test_openai_gpt.py
       test_openai_whisper.py
       test_schedule_s3_integration.py
-      test_waba_io.py
     unit/
       test_classification.py
+      test_handover_logic.py
       test_lang_detect.py
       test_reminders.py
       test_router_smoke.py
       test_schedule_rule.py
+      test_voice_flow.py
+      test_waba_io.py
       test_webhook_security.py
-    
-
+      

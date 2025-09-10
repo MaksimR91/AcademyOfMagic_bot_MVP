@@ -31,6 +31,12 @@ s3_client = boto3.client(
 BUCKET_NAME = "magicacademylogsars"
 SCHEDULE_KEY = "Schedule/arseniy_schedule.json"
 
+# ==== Время в Атырау ====
+def _now_atyrau() -> datetime:
+    """Текущий момент во времени Asia/Atyrau."""
+    return datetime.now(TZ)
+
+
 # ==== Загрузка расписания из S3 ====
 def load_schedule_from_s3():
     try:
@@ -38,14 +44,14 @@ def load_schedule_from_s3():
         content = response['Body'].read().decode('utf-8').strip()
 
         if not content:
-            print("Schedule file is empty, initializing empty list.")
+            logger.warning("[schedule] Schedule file is empty, returning empty list")
             return []
 
         return json.loads(content)
 
     except ClientError as e:
         if e.response['Error']['Code'] == "NoSuchKey":
-            print("Schedule file not found in S3, initializing empty list.")
+            logger.warning("[schedule] Schedule file not found, creating empty list in S3")
             empty_schedule = []
             save_schedule_to_s3(empty_schedule)
             return empty_schedule
@@ -59,7 +65,8 @@ def check_date_availability(date_str, time_str, schedule_list):
     except ValueError:
         return "invalid_format"
 
-    now = datetime.now(TZ)
+    # считаем "сегодня/завтра" по локальному времени Атырау
+    now = _now_atyrau()
     tomorrow = now + timedelta(days=1)
 
     if request_datetime.date() in (now.date(), tomorrow.date()):
@@ -110,10 +117,15 @@ def reserve_slot(date_str: str, time_str: str) -> bool:
 def get_availability(date_str: str, time_str: str) -> str:
     """
     Обёртка: тянет слоты из S3 и применяет правило.
-    При ошибке S3 — по ТЗ возвращаем 'need_handover'.
+    По ТЗ:
+      - любая ошибка при загрузке/парсинге → 'need_handover'
+      - пустой список слотов → 'need_handover'
+      - невалидная структура (не list) → 'need_handover'
     """
     try:
         slots = load_schedule_from_s3()
     except Exception:
+        return "need_handover"
+    if not isinstance(slots, list) or len(slots) == 0:
         return "need_handover"
     return check_date_availability(date_str, time_str, slots)

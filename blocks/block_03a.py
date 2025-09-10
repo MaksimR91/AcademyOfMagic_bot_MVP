@@ -15,6 +15,7 @@ STAGE_PROMPT_PATH     = "prompts/block03a_prompt.txt"
 STRUCTURE_PROMPT_PATH = "prompts/block03a_data_prompt.txt"
 REMINDER_1_PROMPT_PATH= "prompts/block03_reminder_1_prompt.txt"
 REMINDER_2_PROMPT_PATH= "prompts/block03_reminder_2_prompt.txt"
+AVAILABILITY_PROMPT_PATH = "prompts/block03_availability_prompt.txt"
 
 # Тайминги
 DELAY_TO_BLOCK_3_1_HOURS = 4
@@ -44,6 +45,18 @@ KEY_NAMES = {
 def load_prompt(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+    
+def render_prompt(path: str, **kwargs) -> str:
+    """
+    Рендерим текст промпта с плейсхолдерами {name} через str.format().
+    Если в шаблоне нужны фигурные скобки как символы — экранировать {{ }}.
+    """
+    tmpl = load_prompt(path)
+    try:
+        return tmpl.format(**kwargs)
+    except Exception as e:
+        logger.warning(f"[block03a] format error in {path}: {e}")
+        return tmpl
 
 def missing_info_keys(state):
     required = [
@@ -142,10 +155,15 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
         client_request_date = time.time()
 
     if wants_handover_ai(message_text):
-        update_state(user_id, {"handover_reason": "asked_handover"})
+        update_state(user_id, {
+            "handover_reason": "asked_handover",
+            "scenario_stage_at_handover": "block3"
+        })
         return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
+    # Любой входящий текст от клиента «гасит» дальнейшие автокасания до явного решения
+    update_state(user_id, {"last_sender": "user"})
     prev_info = state.get("event_description", "")
     updated_description = (prev_info + "\n" + (message_text or "")).strip()
     update_state(user_id, {"event_description": updated_description})
@@ -243,19 +261,13 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             availability = check_date_availability(date_iso, time_24, schedule)
             logger.info(f"[debug] AVAILABILITY CHECK: {availability} для {date_iso} {time_24}")
 
-            availability_prompt = (
-                global_prompt
-                + f"""
-Клиент ранее написал: "{message_text}"
-Дата мероприятия: {date_iso}
-Время мероприятия: {time_24}
-Сегодня: {client_request_date}
-СТАТУС: {availability}
-
-Напиши клиенту:
-- если СТАТУС:available — "дата и время свободны – Арсений сможет выступить".
-- если need_handover/occupied — "Арсений свяжется позже по дате и времени".
-"""
+            availability_prompt = global_prompt + "\n\n" + render_prompt(
+                AVAILABILITY_PROMPT_PATH,
+                message_text=message_text,
+                date_iso=date_iso,
+                time_24=time_24,
+                client_request_date=client_request_date_str,
+                availability=availability,
             )
             availability_reply = ask_openai(availability_prompt).strip()
             logger.info("availability_reply %s", availability_reply)
@@ -322,7 +334,11 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             "summary_sent": False,
             # ВАЖНО: не трогаем availability_reply_sent
         })
-        plan(user_id, "blocks.block_03a:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
+        # Не дублируем R1, если он уже стоит (идемпотентность при повторных ответах)
+        cur = get_state(user_id) or {}
+        if not cur.get("r1_scheduled_b3a"):
+            plan(user_id, "blocks.block_03a:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
+            update_state(user_id, {"r1_scheduled_b3a": True})
         return
 
     # 5) Если 3 попытки — решаем, что дальше
@@ -354,19 +370,13 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             availability = check_date_availability(date_iso, time_24, schedule)
             logger.info(f"[fallback] AVAILABILITY CHECK: {availability} для {date_iso} {time_24}")
 
-            availability_prompt = (
-                global_prompt
-                + f"""
-Клиент ранее написал: "{message_text}"
-Дата мероприятия: {date_iso}
-Время мероприятия: {time_24}
-Сегодня: {client_request_date}
-СТАТУС: {availability}
-
-Напиши клиенту:
-- если СТАТУС:available — "дата и время свободны – Арсений сможет выступить".
-- если need_handover/occupied — "Арсений свяжется позже по дате и времени".
-"""
+            availability_prompt = global_prompt + "\n\n" + render_prompt(
+                AVAILABILITY_PROMPT_PATH,
+                message_text=message_text,
+                date_iso=date_iso,
+                time_24=time_24,
+                client_request_date=client_request_date_str,
+                availability=availability,
             )
             availability_reply = ask_openai(availability_prompt).strip()
             logger.info("[fallback] availability_reply %s", availability_reply)
@@ -413,12 +423,21 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
         "stage": "block3a",
         "last_message_ts": time.time()
     })
-    plan(user_id, "blocks.block_03a:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
+    # не ставим новый R1, если клиент только что ответил, либо R1 уже стоит
+    cur = get_state(user_id) or {}
+    if cur.get("last_sender") != "user" and not cur.get("r1_scheduled_b3a"):
+        plan(user_id, "blocks.block_03a:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
+        update_state(user_id, {"r1_scheduled_b3a": True})
 
 
 def send_first_reminder_if_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3a":
+        return
+    # клиент уже писал после последнего вопроса → не трогаем
+    if state.get("last_sender") == "user":
+        return
+    if state.get("r1_scheduled_b3a"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -431,11 +450,16 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
 
     update_state(user_id, {"stage": "block3a", "last_message_ts": time.time()})
     plan(user_id, "blocks.block_03a:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
+    update_state(user_id, {"r1_scheduled_b3a": True})
 
 
 def send_second_reminder_if_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3a":
+        return
+    if state.get("last_sender") == "user":
+        return
+    if state.get("r2_scheduled_b3a"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -448,6 +472,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 
     update_state(user_id, {"stage": "block3a", "last_message_ts": time.time()})
     plan(user_id, "blocks.block_03a:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
+    update_state(user_id, {"r2_scheduled_b3a": True})
     
     # финальный таймер — ещё 4 ч тишины → block5
 def finalize_if_still_silent(user_id, send_reply_func):
@@ -455,8 +480,11 @@ def finalize_if_still_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3a":
         return
+    if state.get("fin_scheduled_b3a_done"):
+        return
     update_state(user_id, {
         "handover_reason": "no_response_after_3_2",
         "scenario_stage_at_handover": "block3"
     })
+    update_state(user_id, {"fin_scheduled_b3a_done": True})
     route_message("", user_id, force_stage="block5")

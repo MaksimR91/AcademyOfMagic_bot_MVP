@@ -11,23 +11,30 @@ def local_dev_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def ensure_prompts():
-    Path("prompts").mkdir(exist_ok=True)
-    Path("prompts/global_prompt.txt").write_text("GLOBAL", encoding="utf-8")
-    Path("prompts/block02_prompt.txt").write_text("BLOCK2", encoding="utf-8")
-    Path("prompts/block02_reminder_1_prompt.txt").write_text("R1", encoding="utf-8")
-    Path("prompts/block02_reminder_2_prompt.txt").write_text("R2", encoding="utf-8")
-    # общие 3x
-    Path("prompts/block03_reminder_1_prompt.txt").write_text("R1_3X", encoding="utf-8")
-    Path("prompts/block03_reminder_2_prompt.txt").write_text("R2_3X", encoding="utf-8")
-    # 3a
-    Path("prompts/block03a_prompt.txt").write_text("B3A", encoding="utf-8")
-    Path("prompts/block03a_data_prompt.txt").write_text("B3A_DATA", encoding="utf-8")
-    # 3b
-    Path("prompts/block03b_prompt.txt").write_text("B3B", encoding="utf-8")
-    Path("prompts/block03b_data_prompt.txt").write_text("B3B_DATA", encoding="utf-8")
-    # 3c
-    Path("prompts/block03c_prompt.txt").write_text("B3C", encoding="utf-8")
-    Path("prompts/block03c_data_prompt.txt").write_text("B3C_DATA", encoding="utf-8")
+    """
+    НИЧЕГО не создаём и не перезаписываем.
+    Если какого-то промпта нет — падаем, чтобы не маскировать проблемы.
+    """
+    required = [
+        "prompts/global_prompt.txt",
+        "prompts/block02_prompt.txt",
+        "prompts/block02_reminder_1_prompt.txt",
+        "prompts/block02_reminder_2_prompt.txt",
+        # общие 3x
+        "prompts/block03_reminder_1_prompt.txt",
+        "prompts/block03_reminder_2_prompt.txt",
+        # 3a
+        "prompts/block03a_prompt.txt",
+        "prompts/block03a_data_prompt.txt",
+        # 3b
+        "prompts/block03b_prompt.txt",
+        "prompts/block03b_data_prompt.txt",
+        # 3c
+        "prompts/block03c_prompt.txt",
+        "prompts/block03c_data_prompt.txt",
+    ]
+    missing = [p for p in required if not Path(p).exists()]
+    assert not missing, f"Отсутствуют обязательные промпты: {missing}. Не перезаписываем заглушками."
 
 @pytest.fixture
 def state_store():
@@ -287,3 +294,176 @@ def test_early_busy_handover_has_no_new_timer(monkeypatch, state_store, mod_path
 
     assert calls and calls[-1]["force_stage"] == "block5"
     assert after == before, f"При '{busy_flag}' в {stage} не должны ставиться напоминания"
+
+
+# ================== ДОБАВЛЕНО: «любой ответ отменяет напоминания» ==================
+def test_block2_any_user_reply_cancels_timers(monkeypatch, state_store):
+    """
+    ТЗ: любой ответ клиента отменяет напоминания.
+    Сценарий:
+      1) ставим R1 (через 4ч) в block2;
+      2) имитируем ответ клиента → переход в block3a (rule-based 'детское');
+      3) пробуем вызвать R1/R2 обработчики — новых планирований быть не должно.
+    """
+    from importlib import import_module
+    plan_spy = PlanSpy(monkeypatch)
+    b2 = import_module("blocks.block_02")
+    plan_spy.patch_into_module(monkeypatch, b2)
+
+    calls = []
+    install_fake_router(monkeypatch, calls)
+    install_state_api(monkeypatch, b2, state_store)
+
+    uid = "u_cancel_any_reply"
+    # выставим старт блока 2
+    state_store[uid] = {"stage": "block2"}
+
+    # Ставим R1 напрямую (как будто бот уже доспрашивал)
+    before = len(plan_spy.calls)
+    b2.send_first_reminder_if_silent(uid, lambda x: None)
+    after = len(plan_spy.calls)
+    assert after == before + 1
+    assert plan_spy.calls[-1][1].endswith("blocks.block_02:send_second_reminder_if_silent")
+
+    # Любой ответ клиента → быстрый rule-based переход в детское
+    # (слово "детсад" триггерит _rule_based_label → 'детское' → block3a)
+    b2.handle_block2_user_reply("У нас выпускной в детсаде", uid, lambda x: None)
+
+    # Повторный вызов обработчиков напоминаний теперь не должен ничего планировать
+    before = len(plan_spy.calls)
+    b2.send_first_reminder_if_silent(uid, lambda x: None)
+    b2.send_second_reminder_if_silent(uid, lambda x: None)
+    after = len(plan_spy.calls)
+    assert after == before, "После ответа клиента таймеры не должны планироваться"
+
+# ================== ДОБАВЛЕНО: финальный хендовер после R2 (+4ч) ==================
+def test_block3a_finalize_routes_to_handover(monkeypatch, state_store):
+    """
+    После r2 и ещё 4 часа тишины должен быть хендовер (block5) с флагом причины.
+    Проверяем сам finalize в 3a.
+    """
+    from importlib import import_module
+    plan_spy = PlanSpy(monkeypatch)  # не обязателен здесь, но пусть будет для единообразия
+    mod = import_module("blocks.block_03a")
+    plan_spy.patch_into_module(monkeypatch, mod)
+
+    calls = []
+    install_fake_router(monkeypatch, calls)
+    install_state_api(monkeypatch, mod, state_store)
+    patch_llm(monkeypatch, mod, text="rem")
+    patch_aux_for_block3x(monkeypatch, mod, availability="available")
+
+    uid = "u3a_finalize"
+    state_store[uid] = {"stage": "block3a", "last_bot_question": "?"}
+
+    # имитируем, что уже отправили второе напоминание и прошло 4 часа тишины
+    mod.finalize_if_still_silent(uid, lambda x: None)
+
+    # проверяем переход в block5 и причину
+    assert calls and calls[-1]["force_stage"] == "block5"
+    st = state_store[uid]
+    assert st.get("handover_reason") == "no_response_after_3_2"
+    assert st.get("scenario_stage_at_handover") == "block3"
+
+def test_block2_finalize_routes_to_handover(monkeypatch, state_store):
+    """
+    Аналогичный тест для block2: ожидаем хендовер после finalize.
+    """
+    from importlib import import_module
+    b2 = import_module("blocks.block_02")
+
+    calls = []
+    install_fake_router(monkeypatch, calls)
+    install_state_api(monkeypatch, b2, state_store)
+
+    uid = "u2_finalize"
+    state_store[uid] = {"stage": "block2"}
+
+    b2.finalize_if_still_silent(uid, lambda x: None)
+    assert calls and calls[-1]["force_stage"] == "block5"
+    st = state_store[uid]
+    assert st.get("handover_reason") == "no_response_after_2_2"
+    assert st.get("scenario_stage_at_handover") == "block2"
+
+# ================== ДОБАВЛЕНО: отмена напоминаний для 3a/3b/3c при ответе ==================
+@pytest.mark.parametrize("mod_path,handle_name,stage,ns", BLOCKS)
+def test_block3x_any_user_reply_cancels_timers(monkeypatch, state_store, mod_path, handle_name, stage, ns):
+    """
+    Клиент ответил — остаёмся в своём основном блоке (stage не меняется на block5),
+    и новые напоминания не планируются.
+    """
+    plan_spy = PlanSpy(monkeypatch)
+    mod = import_module(mod_path)
+    plan_spy.patch_into_module(monkeypatch, mod)
+
+    calls = []
+    install_fake_router(monkeypatch, calls)
+    install_state_api(monkeypatch, mod, state_store)
+    patch_aux_for_block3x(monkeypatch, mod, availability="available")
+    # пусть LLM вернёт что-то осмысленное, не пустой JSON
+    patch_llm(monkeypatch, mod, text="Спасибо, вот ответы на вопросы")
+
+    uid = f"u_{stage}_cancel"
+    state_store[uid] = {"stage": stage, "last_bot_question": "?"}
+
+    # поставим R1
+    mod.send_first_reminder_if_silent(uid, lambda x: None)
+    planned_before = len(plan_spy.calls)
+
+    # пришёл ответ клиента — обрабатываем основной handler
+    getattr(mod, handle_name)("отвечаю: дата 2025-09-03, время 15:00", uid, lambda x: None)
+
+    # проверим, что stage остался своим и не ушли в block5
+    assert not calls or calls[-1]["force_stage"] != "block5", "На ответ клиента не должен срабатывать хендовер"
+    # повторные вызовы R1/R2 не планируют новых задач
+    mod.send_first_reminder_if_silent(uid, lambda x: None)
+    mod.send_second_reminder_if_silent(uid, lambda x: None)
+    assert len(plan_spy.calls) == planned_before, "После ответа клиента новые напоминания не ставятся"
+
+# ================== ДОБАВЛЕНО: идемпотентность R1/R2/Final для всех блоков ==================
+@pytest.mark.parametrize("mod_path,stage,ns", [
+    ("blocks.block_02","block2","blocks.block_02"),
+   ("blocks.block_03a","block3a","blocks.block_03a"),
+   ("blocks.block_03b","block3b","blocks.block_03b"),
+   ("blocks.block_03c","block3c","blocks.block_03c"),
+])
+def test_reminders_idempotent(monkeypatch, state_store, mod_path, stage, ns):
+    """
+    Повторные вызовы R1/R2/Final не должны плодить новые задачи.
+    """
+    plan_spy = PlanSpy(monkeypatch)
+    mod = import_module(mod_path)
+    plan_spy.patch_into_module(monkeypatch, mod)
+
+    calls = []
+    install_fake_router(monkeypatch, calls)
+    install_state_api(monkeypatch, mod, state_store)
+    patch_llm(monkeypatch, mod, text="rem")
+    if stage != "block2":
+        patch_aux_for_block3x(monkeypatch, mod, availability="available")
+
+    uid = f"u_{stage}_idem"
+    state_store[uid] = {"stage": stage, "last_bot_question": "?"}
+
+    # R1 дважды
+    before = len(plan_spy.calls)
+    mod.send_first_reminder_if_silent(uid, lambda x: None)
+    mod.send_first_reminder_if_silent(uid, lambda x: None)
+    after = len(plan_spy.calls)
+    assert after == before + 1, "R1 должен ставиться один раз"
+
+    # R2 дважды
+    before = len(plan_spy.calls)
+    mod.send_second_reminder_if_silent(uid, lambda x: None)
+    mod.send_second_reminder_if_silent(uid, lambda x: None)
+    after = len(plan_spy.calls)
+    assert after == before + 1, "R2 должен ставиться один раз"
+
+    # Final дважды (если есть finalize)
+    if hasattr(mod, "finalize_if_still_silent"):
+        before = len(plan_spy.calls)
+        # финализатор не планирует таймеры, но должен быть идемпотентным по side-effects
+        mod.finalize_if_still_silent(uid, lambda x: None)
+        mod.finalize_if_still_silent(uid, lambda x: None)
+        after = len(plan_spy.calls)
+        assert after == before, "Final не должен планировать новые задачи повторно"

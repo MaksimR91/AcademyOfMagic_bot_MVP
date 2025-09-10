@@ -6,6 +6,8 @@ import time
 from state.state import get_state, update_state
 from logger import logger
 from utils.whatsapp_senders import send_text, send_document, send_video, send_image
+from utils.lang_detect import detect_lang, is_russian, is_affirmative, is_negative
+from utils.lang_prompt import build_lang_switch_message
 
 # ===== блоки ===============================================================
 from blocks import (
@@ -160,7 +162,7 @@ def _route_message_impl(
     update_state(user_id, {
         "last_sender": "bot" if force_stage else "user"
     })
-
+    last_sender = "bot" if force_stage else "user"
     logger.info(f"📍 route_message → user={user_id} stage={stage}")
 
     # -------- канал для сообщений Арсению ----------------------------------
@@ -175,6 +177,48 @@ def _route_message_impl(
                 send_document(OWNER_WA_ID, media_id)
             except Exception as e_doc:
                 logger.error(f"[router] send_owner_media document also failed: {e_doc}")
+    # -------- языковой гейт (UC1: детект языка / подтверждение RU) ---------
+    # Применяем ТОЛЬКО для входящих от клиента (не для bot-инициированных шагов)
+    if last_sender == "user":
+        # если уже ждём подтверждения языка — обрабатываем ответ
+        if state.get("lang_check_pending"):
+            lang = state.get("detected_lang", "en")
+            # короткие эвристики "да/нет" на языке клиента (+EN как fallback)
+            if is_affirmative(message_text, lang):
+                update_state(user_id, {
+                    "lang_check_pending": False,
+                    "lang_confirmed": True,
+                })
+                logger.info(f"[router] lang confirmed → RU by user={user_id}")
+            elif is_negative(message_text, lang):
+                # отказ → хендовер владельцу (причина: lang_declined)
+                update_state(user_id, {
+                    "handover_reason": "lang_declined",
+                    "stage": "block5",  # бывший block9
+                })
+                try:
+                    send_text(wa_to, "Передаю диалог Арсению. Спасибо!")
+                except Exception:
+                    pass
+                return _response(user_id)
+            else:
+                # непонятный ответ — повторяем двуязычное сообщение один раз
+                try:
+                    send_text(wa_to, build_lang_switch_message(lang))
+                except Exception:
+                    pass
+                return _response(user_id)
+        else:
+            # первая проверка: если текст не на русском — попросим перейти на RU
+            if not is_russian(message_text):
+                lang = detect_lang(message_text)
+                update_state(user_id, {
+                    "lang_check_pending": True,
+                    "detected_lang": lang,
+                })
+                send_text(wa_to, build_lang_switch_message(lang))
+                return _response(user_id)
+
 
     # -------- выбираем handler для блока -----------------------------------
     if stage == "block2":
