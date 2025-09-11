@@ -39,6 +39,8 @@ SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
 # приводим к булю: "1", "true", "yes" → True
 LOCAL_DEV = str(os.getenv("LOCAL_DEV", "")).strip().lower() in {"1","true","yes"}
+# флаг «запустить фоновые задачи один раз»
+_startup_once = threading.Event()
 
 # ======= ЛОКАЛЬНЫЙ ЛОГГЕР ДЛЯ ПЕРВОГО ЭТАПА ЗАПУСКА ========
 os.makedirs("tmp", exist_ok=True)
@@ -156,9 +158,12 @@ def create_app():
         return "ok", 200
 
     # Старт фона — уже после первого запроса (не блокирует импорт/инициализацию)
-    @app.before_first_request
+      # Старт фона при ПЕРВОМ входящем запросе (замена before_first_request в Flask 3.1)
+    @app.before_request
     def _kick_bg():
-        threading.Thread(target=_bootstrap_background, daemon=True).start()
+        if not _startup_once.is_set():
+            _startup_once.set()
+            threading.Thread(target=_bootstrap_background, daemon=True).start()
 
 
     # Конфиг для вебхука (юнит-тесты переопределяют эти ключи у app.config)
