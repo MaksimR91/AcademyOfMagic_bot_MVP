@@ -8,7 +8,7 @@ import os
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-LOCAL_DEV = os.getenv("LOCAL_DEV") == "1"
+LOCAL_DEV = os.getenv("LOCAL_DEV")
 
 @admin_bp.route("/token", methods=["GET", "POST"])
 def update_token():

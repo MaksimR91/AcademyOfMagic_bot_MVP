@@ -5,7 +5,7 @@ import os, time, threading, requests
 from logger import logger
 from utils.supabase_token import load_token_from_supabase, save_token_to_supabase
 
-LOCAL_DEV = os.getenv("LOCAL_DEV", "0") == "1"
+LOCAL_DEV = os.getenv("LOCAL_DEV")
 _WHATSAPP_TOKEN: str | None = None
 
 def init_token() -> None:

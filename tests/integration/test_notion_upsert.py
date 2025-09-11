@@ -53,7 +53,7 @@ def clear_state():
 @pytest.fixture(autouse=True)
 def local_env(monkeypatch):
     # чтобы APScheduler не стартовал, если где-то планирование
-    monkeypatch.setenv("LOCAL_DEV", "1")
+    monkeypatch.setenv("LOCAL_DEV")
 
 # ─────────────────── быстрые тесты (моки) ──────────────────
 def _seed_minimal_state(user_id: str):

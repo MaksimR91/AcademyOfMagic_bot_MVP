@@ -5,7 +5,7 @@ import os, sys, logging
 from logging.handlers import TimedRotatingFileHandler
 
 # --- 1. выбираем тип хендлера -----------------------------------
-USE_SIMPLE = sys.platform.startswith("win") or os.getenv("LOCAL_DEV") == "1"
+USE_SIMPLE = sys.platform.startswith("win") or os.getenv("LOCAL_DEV")
 
 if not USE_SIMPLE:
     try:

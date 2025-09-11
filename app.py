@@ -38,7 +38,7 @@ logger.info("💬 logger test — должен появиться в консо�
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
-LOCAL_DEV = os.getenv("LOCAL_DEV") == "1"
+LOCAL_DEV = os.getenv("LOCAL_DEV")
 
 # ======= ЛОКАЛЬНЫЙ ЛОГГЕР ДЛЯ ПЕРВОГО ЭТАПА ЗАПУСКА ========
 os.makedirs("tmp", exist_ok=True)

@@ -17,7 +17,7 @@ if not logging.getLogger().handlers:
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 log.info("📦 reminder_engine import started")
-LOCAL_DEV   = os.getenv("LOCAL_DEV", "0") == "1"
+LOCAL_DEV   = os.getenv("LOCAL_DEV")
 TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0") == "1"
 
 # ---------- JobStore выбор ----------

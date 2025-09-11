@@ -7,7 +7,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def local_dev_env(monkeypatch, tmp_path):
     # не стартуем APScheduler и не ходим наружу
-    monkeypatch.setenv("LOCAL_DEV", "1")
+    monkeypatch.setenv("LOCAL_DEV")
     monkeypatch.setenv("ACADEMYBOT_TEST", "1")
     # простые промпты (нужны для block_05 клиентского текста)
     (tmp_path / "prompts").mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@ from logger import logger
 SUPABASE_URL        = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY    = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
-LOCAL_DEV           = os.getenv("LOCAL_DEV") == "1"
+LOCAL_DEV           = os.getenv("LOCAL_DEV")
 
 
 HEADERS = {
