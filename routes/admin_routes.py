@@ -4,11 +4,12 @@ from flask import Blueprint, render_template, request, abort
 from logger import logger
 from utils.token_manager import get_token, set_token, save_token
 import os
+from utils.env_flags import is_local_dev
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-LOCAL_DEV = os.getenv("LOCAL_DEV")
+LOCAL_DEV = is_local_dev()
 
 @admin_bp.route("/token", methods=["GET", "POST"])
 def update_token():

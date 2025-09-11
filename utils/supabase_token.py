@@ -2,11 +2,12 @@ from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import os, time, requests, threading
 from logger import logger
+from utils.env_flags import is_local_dev
 
 SUPABASE_URL        = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY    = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
-LOCAL_DEV           = os.getenv("LOCAL_DEV")
+LOCAL_DEV = is_local_dev()
 
 
 HEADERS = {

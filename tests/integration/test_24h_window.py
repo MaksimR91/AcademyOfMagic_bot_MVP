@@ -14,7 +14,7 @@ def env_24h(monkeypatch):
     Плюс включаем LOCAL_DEV/ACADEMYBOT_TEST, чтобы не стартовал планировщик.
     """
     monkeypatch.setenv("LATE_DROP_MIN", "1440")
-    monkeypatch.setenv("LOCAL_DEV")
+    monkeypatch.setenv("LOCAL_DEV", "1")
     monkeypatch.setenv("ACADEMYBOT_TEST", "1")
 
 

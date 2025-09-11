@@ -4,8 +4,9 @@ ensure_env_loaded()
 import os, time, threading, requests
 from logger import logger
 from utils.supabase_token import load_token_from_supabase, save_token_to_supabase
+from utils.env_flags import is_local_dev
 
-LOCAL_DEV = os.getenv("LOCAL_DEV")
+LOCAL_DEV = is_local_dev()
 _WHATSAPP_TOKEN: str | None = None
 
 def init_token() -> None:

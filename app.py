@@ -30,6 +30,7 @@ from utils.outgoing_message import send_text_message
 from utils.incoming_message import handle_message, handle_status
 from utils.supabase_token import start_supabase_ping_loop
 from utils.cleanup import cleanup_temp_files, start_memory_cleanup_loop, log_memory_usage
+from utils.env_flags import is_local_dev
 
 logger.info("💬 logger test — должен появиться в консоли Render")
 
@@ -38,7 +39,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
 # приводим к булю: "1", "true", "yes" → True
-LOCAL_DEV = str(os.getenv("LOCAL_DEV", "")).strip().lower() in {"1","true","yes"}
+LOCAL_DEV = is_local_dev()
 # флаг «запустить фоновые задачи один раз»
 _startup_once = threading.Event()
 

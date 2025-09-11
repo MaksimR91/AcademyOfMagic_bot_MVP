@@ -7,7 +7,7 @@ from pathlib import Path
 @pytest.fixture(autouse=True)
 def local_dev_env(monkeypatch):
     # планировщик не ходит наружу
-    monkeypatch.setenv("LOCAL_DEV")
+    monkeypatch.setenv("LOCAL_DEV", "1")
 
 @pytest.fixture(autouse=True)
 def ensure_prompts():

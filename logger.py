@@ -3,9 +3,10 @@ from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import os, sys, logging
 from logging.handlers import TimedRotatingFileHandler
+from utils.env_flags import is_local_dev
 
 # --- 1. выбираем тип хендлера -----------------------------------
-USE_SIMPLE = sys.platform.startswith("win") or os.getenv("LOCAL_DEV")
+USE_SIMPLE = sys.platform.startswith("win") or is_local_dev()
 
 if not USE_SIMPLE:
     try:

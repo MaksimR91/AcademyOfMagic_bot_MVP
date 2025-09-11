@@ -7,6 +7,7 @@ from apscheduler.jobstores.memory import MemoryJobStore
 from datetime import datetime, timezone
 from state.state import get_state
 from utils.whatsapp_senders import send_text          # тот же dict‑API
+from utils.env_flags import is_local_dev
 
 if not logging.getLogger().handlers:
     h = logging.StreamHandler()          # stdout → Render console
@@ -17,7 +18,7 @@ if not logging.getLogger().handlers:
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 log.info("📦 reminder_engine import started")
-LOCAL_DEV   = os.getenv("LOCAL_DEV")
+LOCAL_DEV = is_local_dev()
 TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0") == "1"
 
 # ---------- JobStore выбор ----------

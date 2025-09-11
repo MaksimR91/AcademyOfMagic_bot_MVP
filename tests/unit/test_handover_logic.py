@@ -5,7 +5,7 @@ from importlib import import_module
 @pytest.fixture(autouse=True)
 def base_env(monkeypatch):
     # только окружение; промпты НЕ трогаем
-    monkeypatch.setenv("LOCAL_DEV")
+    monkeypatch.setenv("LOCAL_DEV", "1")
 
 @pytest.fixture
 def state_store():

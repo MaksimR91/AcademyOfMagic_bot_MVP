@@ -35,7 +35,7 @@ def _expected_block(label):
 
 @pytest.fixture(autouse=True)
 def force_local_dev(monkeypatch):
-    monkeypatch.setenv("LOCAL_DEV")
+    monkeypatch.setenv("LOCAL_DEV", "1")
 
 def _assert_prompts_exist():
     from pathlib import Path
