@@ -17,4 +17,3 @@ python-dotenv
 tzdata
 pytest-env
 langdetect
-pyaudioop==0.2.0
