@@ -2,7 +2,6 @@ from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import os, time, threading, requests
 from openai import OpenAI
-from pydub import AudioSegment
 from logger import logger
 from state.state import save_if_absent, get_state, update_state
 from utils.token_manager import get_token
@@ -55,6 +54,7 @@ def handle_message(message, phone_number_id, bot_display_number, contacts):
                          daemon=True).start()
 
 def handle_audio_async(message, phone_number_id, normalized_number, name):
+    from pydub import AudioSegment
     try:
         audio_id = message["audio"]["id"]
         logger.info(f"🎿 Обработка голосового файла, media ID: {audio_id}")

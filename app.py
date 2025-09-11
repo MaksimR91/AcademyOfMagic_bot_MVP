@@ -20,7 +20,6 @@ from logger import logger
 from rollover_scheduler import start_rollover_scheduler
 import requests
 from openai import OpenAI
-from pydub import AudioSegment
 from utils.upload_materials_to_meta_and_update_registry import start_media_upload_loop
 import json, tempfile, textwrap
 from router import route_message
@@ -38,7 +37,8 @@ logger.info("💬 logger test — должен появиться в консо�
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
-LOCAL_DEV = os.getenv("LOCAL_DEV")
+# приводим к булю: "1", "true", "yes" → True
+LOCAL_DEV = str(os.getenv("LOCAL_DEV", "")).strip().lower() in {"1","true","yes"}
 
 # ======= ЛОКАЛЬНЫЙ ЛОГГЕР ДЛЯ ПЕРВОГО ЭТАПА ЗАПУСКА ========
 os.makedirs("tmp", exist_ok=True)
@@ -81,12 +81,58 @@ logger.info(f"🔐 OpenAI API key начинается на: {openai_api_key[:5]
 init_token()  # учтёт LOCAL_DEV и/или Supabase
 
 # ─────────────────────────────────────────────────────────────
+def _bootstrap_background():
+    """
+    Всё тяжёлое — только в фоне, чтобы не блокировать ответ на $PORT.
+    """
+    # Планировщик ротации логов
+    try:
+        start_rollover_scheduler()
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось запустить rollover scheduler: {e}")
+
+    # Проверка/автообновление токена
+    try:
+        start_token_check_loop()
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось запустить token_check_loop: {e}")
+
+    # Разовая проверка токена с алертом
+    try:
+        notify_if_token_invalid()
+    except Exception as e:
+        logger.warning(f"⚠️ notify_if_token_invalid() упала: {e}")
+
+    # Ежедневная загрузка материалов
+    try:
+        start_media_upload_loop()
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось запустить media_upload_loop: {e}")
+
+    # Пинг Supabase (если не локал)
+    if not LOCAL_DEV:
+        try:
+            start_supabase_ping_loop()
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось запустить supabase_ping_loop: {e}")
+    else:
+        logger.info("🟡 LOCAL_DEV=1: Supabase ping loop отключён")
+
+    # Разовая очистка и фоновый контроль памяти
+    try:
+        cleanup_temp_files()
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось выполнить очистку временных файлов: {e}")
+    try:
+        start_memory_cleanup_loop()
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось запустить memory_cleanup_loop: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
 # ФАБРИКА ПРИЛОЖЕНИЯ
 def create_app():
-    """
-    Создаёт и настраивает Flask-приложение.
-    Перенесён запуск фоновых задач сюда, чтобы избежать двойного старта при импортe.
-    """
+    """Создаёт и настраивает Flask-приложение. Без тяжёлых блокировок."""
     app = Flask(__name__)
 
     # Логгер Flask → root/gunicorn
@@ -104,49 +150,16 @@ def create_app():
     app.register_blueprint(webhook_bp)
     app.register_blueprint(debug_mem_bp)
 
-    # Планировщик ротации логов
-    try:
-        start_rollover_scheduler()
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось запустить rollover scheduler: {e}")
+    # Быстрый health — Render сразу увидит, что сервис жив
+    @app.get("/health")
+    def health():
+        return "ok", 200
 
-    # Проверка и авто-обновление токена
-    try:
-        start_token_check_loop()
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось запустить token_check_loop: {e}")
+    # Старт фона — уже после первого запроса (не блокирует импорт/инициализацию)
+    @app.before_first_request
+    def _kick_bg():
+        threading.Thread(target=_bootstrap_background, daemon=True).start()
 
-    # Разовая проверка токена при старте c алертом
-    try:
-        notify_if_token_invalid()
-    except Exception as e:
-        logger.warning(f"⚠️ notify_if_token_invalid() упала: {e}")
-
-    # Ежедневная загрузка материалов
-    try:
-        start_media_upload_loop()
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось запустить media_upload_loop: {e}")
-
-    # Пинг Supabase (кроме LOCAL_DEV)
-    if not LOCAL_DEV:
-        try:
-            start_supabase_ping_loop()
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось запустить supabase_ping_loop: {e}")
-    else:
-        logger.info("🟡 LOCAL_DEV=1: Supabase ping loop отключён")
-
-    try:
-        cleanup_temp_files()
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось выполнить очистку временных файлов: {e}")
-
-    # Мониторинг памяти
-    try:
-        start_memory_cleanup_loop()
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось запустить memory_cleanup_loop: {e}")
 
     # Конфиг для вебхука (юнит-тесты переопределяют эти ключи у app.config)
     app.config.update(
