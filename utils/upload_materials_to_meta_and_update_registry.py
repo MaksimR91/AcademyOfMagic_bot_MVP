@@ -4,6 +4,7 @@ import os, json, requests, time, threading
 from datetime import datetime, timedelta
 from tempfile import TemporaryDirectory
 from botocore.exceptions import ClientError
+import mimetypes
 
 from utils.materials import (
     s3, S3_BUCKET,
@@ -37,20 +38,52 @@ def registry_save(reg):
     except Exception as e:
         logger.error(f"registry_save: {e}")
 
+def _guess_mime(path: str, mtype: str) -> str:
+    # Явно задаём MIME — Graph к этому чувствителен
+    # Для document важен корректный application/pdf и т.п.
+    mime, _ = mimetypes.guess_type(path)
+    if mime:
+        return mime
+    # запасной вариант по типу
+    return {
+        "video": "video/mp4",
+        "document": "application/octet-stream",
+        "image": "image/jpeg",
+        "audio": "audio/mpeg",
+    }.get(mtype, "application/octet-stream")
+
 def meta_upload(local: str, mtype: str, wa_token: str):
     try:
+        fname = os.path.basename(local)
+        mime = _guess_mime(local, mtype)
         with open(local, "rb") as f:
+            files = {"file": (fname, f, mime)}
+            data  = {"messaging_product": "whatsapp", "type": mtype}
             resp = requests.post(
-            META_URL,
-            headers={"Authorization": f"Bearer {wa_token}"},
-            files={"file": f},
-            data={"messaging_product": "whatsapp", "type": mtype},
-            timeout=60,
+                META_URL,
+                headers={"Authorization": f"Bearer {wa_token}"},
+                files=files,
+                data=data,
+                timeout=60,
             )
-        resp.raise_for_status()
+        if not resp.ok:
+            # логируем максимум сигнала, чтобы сразу видеть первопричину
+            try:
+                err_json = resp.json()
+            except Exception:
+                err_json = resp.text
+            logger.error(
+                "META /media  %s %s  fname=%s mime=%s type=%s  resp=%s",
+                resp.status_code, resp.reason, fname, mime, mtype, err_json
+            )
+            return None
         return resp.json().get("id")
+    except requests.RequestException as e:
+        # сетевые/таймауты
+        logger.error("META /media request err for %s: %s", local, e, exc_info=True)
+        return None
     except Exception as e:
-        logger.error(f"meta_upload {local}: {e}")
+        logger.error("meta_upload %s: %s", local, e, exc_info=True)
         return None
 
 def cat_video(fname):
