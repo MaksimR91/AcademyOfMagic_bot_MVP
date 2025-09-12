@@ -7,6 +7,7 @@ from utils.env_flags import is_local_dev
 SUPABASE_URL        = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY    = os.getenv("SUPABASE_API_KEY")
 SUPABASE_TABLE_NAME = "tokens"
+ENV_FALLBACK_TOKEN  = os.getenv("WHATSAPP_TOKEN")
 LOCAL_DEV = is_local_dev()
 
 
@@ -16,11 +17,13 @@ HEADERS = {
      "Content-Type": "application/json",
  }
 
-def load_token_from_supabase(retries: int = 3, delay_sec: int = 3) -> str:
+def load_token_from_supabase(retries: int = 3, delay_sec: int = 3) -> str | None:
     if LOCAL_DEV:
-        raise RuntimeError("LOCAL_DEV=1: skip Supabase load")
+        logger.info("LOCAL_DEV=1: skip Supabase load")
+        return None
     if not SUPABASE_URL or not SUPABASE_API_KEY:
-        raise RuntimeError("Supabase env missing: SUPABASE_URL or SUPABASE_API_KEY")
+        logger.error("Supabase env missing: SUPABASE_URL or SUPABASE_API_KEY")
+        return None
     url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}?select=token&order=updated_at.desc&limit=1"
     last_err = None
     for attempt in range(1, retries + 1):
@@ -29,13 +32,32 @@ def load_token_from_supabase(retries: int = 3, delay_sec: int = 3) -> str:
             resp.raise_for_status()
             data = resp.json()
             if not data:
-                raise RuntimeError("No token rows in Supabase")
+                logger.warning("No token rows in Supabase")
+                return None
             return data[0]["token"]
         except Exception as e:
             last_err = e
             logger.warning(f"[supabase] load_token attempt {attempt}/{retries} failed: {e}")
             time.sleep(delay_sec)
-    raise last_err
+    logger.error(f"[supabase] all load attempts failed: {last_err}")
+    return None
+
+
+def load_token() -> str | None:
+    """
+    Универсальная загрузка токена:
+    1. Пробуем Supabase
+    2. Если нет или ошибка — используем ENV (WA_ACCESS_TOKEN)
+    """
+    token = load_token_from_supabase()
+    if token:
+        logger.info("🔑 Токен загружен из Supabase")
+        return token
+    if ENV_FALLBACK_TOKEN:
+        logger.warning("⚠️ Используем fallback токен из ENV (WA_ACCESS_TOKEN)")
+        return ENV_FALLBACK_TOKEN
+    logger.error("❌ Нет доступного токена ни в Supabase, ни в ENV")
+    return None
 
 def save_token_to_supabase(token: str) -> bool:
     if LOCAL_DEV:

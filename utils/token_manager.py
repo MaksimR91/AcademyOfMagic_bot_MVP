@@ -3,7 +3,7 @@ from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import os, time, threading, requests
 from logger import logger
-from utils.supabase_token import load_token_from_supabase, save_token_to_supabase
+from utils.supabase_token import save_token_to_supabase, load_token
 from utils.env_flags import is_local_dev
 
 LOCAL_DEV = is_local_dev()
@@ -20,7 +20,7 @@ def init_token() -> None:
             logger.critical("💥 LOCAL_DEV=1, но WHATSAPP_TOKEN пуст")
     else:
         try:
-            _WHATSAPP_TOKEN = load_token_from_supabase()
+            _WHATSAPP_TOKEN = load_token()
             logger.info(f"🔍 WA токен из Supabase: {_WHATSAPP_TOKEN[:8]}..., len={len(_WHATSAPP_TOKEN)}")
         except Exception as e:
             logger.error(f"❌ Supabase токен не получили: {e}")
