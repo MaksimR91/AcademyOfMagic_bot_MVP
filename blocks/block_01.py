@@ -10,7 +10,7 @@ GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
 STAGE_PROMPT_PATH = "prompts/block01_prompt.txt"
 
 # Время до автоматического перехода
-DELAY_TO_BLOCK_2_SECONDS = 15
+DELAY_TO_BLOCK_2_SECONDS = 1
 
 
 def load_prompt(path):
