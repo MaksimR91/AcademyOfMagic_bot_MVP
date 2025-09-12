@@ -9,10 +9,6 @@ from logger import logger
 GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
 STAGE_PROMPT_PATH = "prompts/block01_prompt.txt"
 
-# Время до автоматического перехода
-DELAY_TO_BLOCK_2_SECONDS = 1
-
-
 def load_prompt(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
@@ -48,7 +44,5 @@ def handle_block1(message_text, user_id, send_reply_func):
 
     # Запуск таймеров переходов
     from utils.reminder_engine import plan
-    plan(user_id,
-    "blocks.block_01:proceed_to_block_2",   # <‑‑ путь к функции
-    DELAY_TO_BLOCK_2_SECONDS)
+    proceed_to_block_2(user_id)
     
