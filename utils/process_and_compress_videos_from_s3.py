@@ -180,3 +180,6 @@ def process_and_compress_videos_from_s3():
 
             except Exception as e:
                 logger.error(f"{src_key}: {e}")
+
+if __name__ == "__main__":
+    process_and_compress_videos_from_s3()

@@ -2,6 +2,7 @@ import time
 from utils.ask_openai import ask_openai
 from utils.wants_handover_ai import wants_handover_ai
 from utils.reminder_engine import plan
+from state.state import update_state
 from logger import logger
 from importlib import import_module
 
@@ -72,6 +73,14 @@ def _rule_based_label(text: str) -> str | None:
     return None
 
 def handle_block2(message_text, user_id, send_reply_func):
+
+    from router import route_message    
+    if wants_handover_ai(message_text):
+        update_state(user_id, {
+            "handover_reason": "asked_handover",
+            "scenario_stage_at_handover": "block2"
+        })
+        return route_message(message_text, user_id, force_stage="block5")
 
     state = _state()
     state_dict = state.get_state(user_id)
