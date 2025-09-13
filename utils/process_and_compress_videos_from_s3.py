@@ -24,6 +24,7 @@ MIN_VIDEO_KBPS      = 250  # нижняя граница качества для
 AUDIO_KBPS          = 96   # битрейт аудио
 BITRATE_SAFETY_K    = 0.94 # запас на контейнер/оверхэнды (~6%)
 LADDER              = [(1280,720), (854,480), (640,360)]  # 720p→480p→360p
+MP4_MIME_CT         = {"ContentType": "video/mp4"}
 
 def _ffprobe_json(path: str) -> dict:
     """Читаем метадату файла через ffprobe -print_format json."""
@@ -70,6 +71,21 @@ def encode_bounded(src: str, dst: str, w: int, h: int, v_kbps: int, a_kbps: int,
     ]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=timeout_s)
 
+def remux_to_mp4(src: str, dst: str, timeout_s: int = 120):
+    """
+    Быстрый ремакс без перекодирования в MP4-контейнер.
+    Работает, если исходник H.264/AAC в MOV/M4V и т.п.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", src,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        dst,
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=timeout_s)
+
+
 def process_and_compress_videos_from_s3():
     src_keys = list_src_video_keys()
     if not src_keys:
@@ -96,15 +112,29 @@ def process_and_compress_videos_from_s3():
                     logger.error(f"Скачивание {src_key}: {e}")
                     continue
                 
-                # 0) Если исходник уже <= лимита — просто используем его
+                 # 0) Если исходник уже <= лимита — используем его,
+                 #    но гарантируем MP4-контейнер (Meta не принимает video/quicktime)
                 orig_mb = os.path.getsize(local_src) / 1_048_576
                 if orig_mb <= MAX_SIZE_MB:
                     try:
-                        s3.upload_file(local_src, S3_BUCKET, cmp_key, ExtraArgs={"ContentType": "video/mp4"})
-                        logger.info(f"⬆ {cmp_key} (исходник {orig_mb:.1f} МБ) загружен без перекодирования")
+                        _, src_ext = os.path.splitext(src_name)
+                        if src_ext.lower() == ".mp4":
+                            # уже mp4 — можем грузить напрямую
+                            s3.upload_file(local_src, S3_BUCKET, cmp_key, ExtraArgs=MP4_MIME_CT)
+                            logger.info(f"⬆ {cmp_key} (исходник {orig_mb:.1f} МБ, .mp4) загружен без перекодирования")
+                        else:
+                            # ремакс в mp4 без перекодирования
+                            remux_to_mp4(local_src, local_cmp, timeout_s=150)
+                            s3.upload_file(local_cmp, S3_BUCKET, cmp_key, ExtraArgs=MP4_MIME_CT)
+                            logger.info(f"♻ {src_name} → MP4 ремакс; ⬆ {cmp_key} (≤{MAX_SIZE_MB} МБ) загружен")
+                    except subprocess.CalledProcessError as e:
+                        logger.error(f"Ремакс {src_name} в MP4 не удался: {e}")
+                        # не падаем — попробуем нормальный encode ниже
                     except Exception as e:
-                        logger.error(f"Загрузка исходника как compressed для {src_name} провалилась: {e}")
-                    continue
+                        logger.error(f"Загрузка compressed для {src_name} провалилась: {e}")
+                        # не выходим; дадим шанс ветке с перекодированием
+                    else:
+                        continue
 
                 # 1) Расчёт целевого битрейта под лимит
                 dur = max(1.0, probe_duration_sec(local_src))
@@ -143,7 +173,7 @@ def process_and_compress_videos_from_s3():
                     continue
                 # 4) Успех — загружаем сжатое видео
                 try:
-                    s3.upload_file(local_cmp, S3_BUCKET, cmp_key, ExtraArgs={"ContentType": "video/mp4"})
+                    s3.upload_file(local_cmp, S3_BUCKET, cmp_key, ExtraArgs=MP4_MIME_CT)
                     logger.info(f"⬆ {cmp_key} загружено (<= {MAX_SIZE_MB} МБ)")
                 except Exception as e:
                     logger.error(f"Загрузка compressed для {src_name} провалилась: {e}")

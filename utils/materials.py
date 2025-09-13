@@ -40,10 +40,13 @@ def key_last_modified(key: str):
 
 
 def compressed_key_for(src_key: str) -> str:
-    """ materials/video/clip.mov → materials/video/compressed/clip_comp.mov """
+    """ 
+    materials/video/clip.mov → materials/video/compressed/clip_comp.mp4
+    Всегда возвращаем .mp4 для совместимости с Meta Graph /media.
+    """
     fname = op.basename(src_key)
-    base, ext = op.splitext(fname)
-    return f"{CMP_PREFIX}{base}_comp{ext}"
+    base, _ = op.splitext(fname)
+    return f"{CMP_PREFIX}{base}_comp.mp4"
 
 
 def list_src_video_keys():
