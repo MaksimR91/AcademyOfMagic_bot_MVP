@@ -74,14 +74,6 @@ def _rule_based_label(text: str) -> str | None:
 
 def handle_block2(message_text, user_id, send_reply_func):
 
-    from router import route_message    
-    if wants_handover_ai(message_text):
-        update_state(user_id, {
-            "handover_reason": "asked_handover",
-            "scenario_stage_at_handover": "block2"
-        })
-        return route_message(message_text, user_id, force_stage="block5")
-
     state = _state()
     state_dict = state.get_state(user_id)
     # если уже отправляли стартовое сообщение — не дублируем
@@ -114,6 +106,14 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     logger.info(f"[debug] 👤 handle_block2_user_reply: user={user_id}, text={message_text}")
     state = _state()
     st = state.get_state(user_id) or {}
+    # 🔁 Хендовер по явной просьбе клиента (теперь проверяем здесь, а не в handle_block2)
+    if wants_handover_ai(message_text):
+        update_state(user_id, {
+            "handover_reason": "asked_handover",
+            "scenario_stage_at_handover": "block2"
+        })
+        from router import route_message
+        return route_message(message_text, user_id, force_stage="block5")
     # (0) Позитивные шорткаты: если уверенно узнали тип — сразу маршрутизируем.
     rb = _rule_based_label(message_text)
     if rb:
