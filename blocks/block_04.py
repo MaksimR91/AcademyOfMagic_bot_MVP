@@ -7,12 +7,7 @@ from logger import logger
 
 # ---- константы ------------------------------------------------------
 MEDIA_REGISTRY_KEY = "materials/media_registry.json"   # лежит в Yandex-S3
-
 # ---------------------------------------------------------------------------
-
-def load_prompt(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
 
 def load_media_registry() -> dict:
     try:
@@ -36,35 +31,25 @@ def try_send(func, *args, **kwargs):
 
 # ---- выбор материалов ------------------------------------------------------
 
-# Простейшая мапа категорий в реестре.
-# Подстрой под свой media_registry.json при необходимости.
-TYPE_TO_KP_KEY = {
-    "детское":      "child",
-    "семейное":     "child",     # у Арсения одно КП на детское/семейное
-    "взрослое":     "adult",
-    "нестандартное":"adult",     # в MVP берём взрослое КП
-}
-
-TYPE_TO_VIDEO_KEY = {
-    "детское":      "child",
-    "семейное":     "child",
-    "взрослое":     "adult",
-    "нестандартное":"adult",
-}
-
 def choose_kp(show_type: str, registry: dict) -> str | None:
-    key = TYPE_TO_KP_KEY.get(show_type)
-    if not key:
-        return None
-    info = registry.get("kp", {}).get(key)
-    return info.get("media_id") if info else None
+    """
+    КП единое для всех типов — берём kp.common.
+    """
+    kp_info = (registry.get("kp") or {}).get("common")
+    return kp_info.get("media_id") if kp_info else None
 
 def choose_video(show_type: str, registry: dict) -> str | None:
-    key = TYPE_TO_VIDEO_KEY.get(show_type)
-    if not key:
-        return None
-    vids = registry.get("videos", {}).get(key, []) or []
-    return vids[0]["media_id"] if vids else None
+    """
+    Возвращает media_id подходящего видео или None.
+    Деление по месту убрано: только child/adult.
+    """
+    cat = "child" if show_type in ("детское", "семейное") else "adult"
+    videos = (registry.get("videos") or {})
+    vids = videos.get(cat, [])
+    if not vids:
+        # на всякий случай фолбэк
+        vids = videos.get("adult", []) or videos.get("child", [])
+    return (vids[0] or {}).get("media_id") if vids else None
 
 def infer_show_type_from_stage(state: dict) -> str | None:
     """
@@ -135,6 +120,8 @@ def handle_block4(
         kp_id      = choose_kp(show_type, registry)
         video_id   = choose_video(show_type, registry)
 
+        if not kp_id and not video_id:
+            logger.warning(f"[block4] Не нашли материалов в реестре для show_type={show_type} (kp.common / videos.{ 'child' if show_type in ('детское','семейное') else 'adult'})")
         if kp_id:
             try_send(send_document_func, kp_id)   # PDF КП
         if video_id:

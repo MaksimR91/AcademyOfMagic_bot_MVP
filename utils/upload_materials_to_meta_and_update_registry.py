@@ -86,14 +86,21 @@ def meta_upload(local: str, mtype: str, wa_token: str):
         logger.error("meta_upload %s: %s", local, e, exc_info=True)
         return None
 
-def cat_video(fname):
+def cat_video(fname: str) -> str:
+    """
+    Только 2 категории: child | adult.
+    Опираемся на имя файла (детские ролики у тебя начинаются с 'Детское_' или содержат 'child').
+    """
     n = fname.lower()
-    if "garden" in n:       return "child_garden"
-    if "home" in n:         return "child_home"
-    if "not_home" in n or "cafe" in n: return "child_not_home"
+    if "детск" in n or "child" in n or "family" in n or "семейн" in n:
+        return "child"
     return "adult"
 
-def cat_kp(fname): return "child" if "child" in fname.lower() else "adult"
+def cat_kp(fname: str) -> str:
+    """
+    КП единое — всегда 'common'.
+    """
+    return "common"
 
 def upload_materials_to_meta_and_update_registry(wa_token: str):
     reg  = registry_load()
