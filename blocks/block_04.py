@@ -1,15 +1,11 @@
 import json
 import time
 from utils.materials import s3, S3_BUCKET
-from utils.ask_openai import ask_openai
 from utils.wants_handover_ai import wants_handover_ai
 from state.state import get_state, update_state
 from logger import logger
 
-# ---- константы и пути ------------------------------------------------------
-GLOBAL_PROMPT_PATH  = "prompts/global_prompt.txt"
-STAGE_PROMPT_PATH   = "prompts/block04_prompt.txt"
-
+# ---- константы ------------------------------------------------------
 MEDIA_REGISTRY_KEY = "materials/media_registry.json"   # лежит в Yandex-S3
 
 # ---------------------------------------------------------------------------
@@ -40,30 +36,58 @@ def try_send(func, *args, **kwargs):
 
 # ---- выбор материалов ------------------------------------------------------
 
+# Простейшая мапа категорий в реестре.
+# Подстрой под свой media_registry.json при необходимости.
+TYPE_TO_KP_KEY = {
+    "детское":      "child",
+    "семейное":     "child",     # у Арсения одно КП на детское/семейное
+    "взрослое":     "adult",
+    "нестандартное":"adult",     # в MVP берём взрослое КП
+}
+
+TYPE_TO_VIDEO_KEY = {
+    "детское":      "child",
+    "семейное":     "child",
+    "взрослое":     "adult",
+    "нестандартное":"adult",
+}
+
 def choose_kp(show_type: str, registry: dict) -> str | None:
-    cat = "child" if show_type in ("детское", "семейное") else "adult"
-    kp_info = registry.get("kp", {}).get(cat)
-    return kp_info["media_id"] if kp_info else None
+    key = TYPE_TO_KP_KEY.get(show_type)
+    if not key:
+        return None
+    info = registry.get("kp", {}).get(key)
+    return info.get("media_id") if info else None
 
-def choose_video(show_type: str, place_type: str, registry: dict) -> str | None:
-    """
-    Возвращает media_id подходящего видео или None.
-    place_type уже нормализован в блоках 3a-3c:
-        "home" | "garden" | "cafe" | None
-    """
-    if show_type in ("детское", "семейное"):
-        if   place_type == "garden": cat = "child_garden"
-        elif place_type == "home":   cat = "child_home"
-        else:                        cat = "child_not_home"
-    else:
-        cat = "adult"
-
-    vids = registry.get("videos", {}).get(cat, [])
-    if not vids:
-        # fallback: пробуем общий "adult" набор, чтобы не остаться без видео
-        vids = registry.get("videos", {}).get("adult", [])
-
+def choose_video(show_type: str, registry: dict) -> str | None:
+    key = TYPE_TO_VIDEO_KEY.get(show_type)
+    if not key:
+        return None
+    vids = registry.get("videos", {}).get(key, []) or []
     return vids[0]["media_id"] if vids else None
+
+def infer_show_type_from_stage(state: dict) -> str | None:
+    """
+    Фолбэк, если show_type пуст: определяем по исходному блоку.
+    Если блок не сохранён — вернём None.
+    """
+    # пробуем явные следы
+    from_stage = state.get("prev_stage") or state.get("last_stage") or state.get("stage_before")
+    # иногда в state хранится только текущая стадия, попробуем history, если есть
+    if not from_stage:
+        from_stage = state.get("scenario_stage_at_handover")  # вдруг пришли в 4 откуда-то
+
+    if not from_stage:
+        return None
+    if "block3a" in from_stage:
+        return "детское"
+    if "block3b" in from_stage:
+        return "взрослое"
+    if "block3c" in from_stage:
+        return "семейное"
+    if "block3d" in from_stage:
+        return "нестандартное"
+    return None
 
 # ---- основной обработчик ---------------------------------------------------
 
@@ -86,34 +110,41 @@ def handle_block4(
         return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
-    show_type   = state.get("show_type")        # 'детское' / 'семейное' / 'взрослое'
-    place_type  = state.get("place_type", "")   # 'дом', 'кафе', 'детский сад' ...
+    show_type   = (state.get("show_type") or "").strip().lower()   # 'детское' / 'семейное' / 'взрослое' / 'нестандартное'
     materials_sent = state.get("materials_sent", False)
+    logger.info(f"[block4] вход: show_type={show_type!r}, snapshot={ {k: state.get(k) for k in ('stage','show_type','prev_stage','last_stage')} }")
 
     # ========== первый заход: отправляем материалы и завершаем беседу ======
     if not materials_sent:
+        # 1) show_type обязателен; если его нет — пытаемся вывести из блоков 3x
+        if not show_type:
+            inferred = infer_show_type_from_stage(state)
+            if inferred:
+                show_type = inferred
+                update_state(user_id, {"show_type": show_type})
+                logger.info(f"[block4] show_type был пуст → взяли из from_stage: {show_type}")
+
+        # 2) Если всё ещё непонятно — один короткий вопрос и выходим (без ИИ)
+        if not show_type:
+            question = "Чтобы прислать материалы, уточните формат: детское, семейное, взрослое или нестандартное?"
+            try_send(send_text_func, question)
+            update_state(user_id, {"stage": "block4_wait_type", "last_message_ts": time.time()})
+            return  # ждём ответ клиента
+
         registry   = load_media_registry()
         kp_id      = choose_kp(show_type, registry)
-        video_id   = choose_video(show_type, place_type, registry)
+        video_id   = choose_video(show_type, registry)
 
         if kp_id:
             try_send(send_document_func, kp_id)   # PDF КП
         if video_id:
             try_send(send_video_func, video_id)   # пример шоу
 
-        # Короткое вступление из промпта (можно оставить как есть)
-        intro_text = ask_openai(
-            load_prompt(GLOBAL_PROMPT_PATH) + "\n\n" + load_prompt(STAGE_PROMPT_PATH)
+        # Финальное вежливое сообщение (без ИИ).
+        try_send(
+            send_text_func,
+            "Спасибо! Материалы отправил. Дальше подключится Арсений — он уточнит детали и предложит лучший вариант. ✨"
         )
-        if intro_text:
-            send_text_func(intro_text)
-
-        # Финальное вежливое сообщение. Без ожидания ответа.
-        closing_text = (
-            "Спасибо! Материалы отправил. Дальше подключится Арсений — он уточнит детали и предложит лучший вариант. "
-            "Хорошего дня!"
-        )
-        send_text_func(closing_text)
 
         materials_ts = time.time()
         update_state(user_id, {
