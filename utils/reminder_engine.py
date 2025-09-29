@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 log.info("📦 reminder_engine import started")
 LOCAL_DEV = is_local_dev()
-TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0") == "1"
+TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0")
 ACCEL = float(os.getenv("REMINDER_ACCEL", "1.0"))  # 1.0 — без ускорения; 0.001 ≈ x1000 быстрее
 
 # ---------- JobStore выбор ----------
