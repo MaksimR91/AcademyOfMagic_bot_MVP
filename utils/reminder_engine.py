@@ -19,8 +19,14 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 log.info("📦 reminder_engine import started")
 LOCAL_DEV = is_local_dev()
-TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0")
-ACCEL = float(os.getenv("REMINDER_ACCEL", "1.0"))  # 1.0 — без ускорения; 0.001 ≈ x1000 быстрее
+# Приводим к булю: только 1/true/yes включают тестовый режим.
+TEST_MODE = str(os.getenv("ACADEMYBOT_TEST", "")).strip().lower() in {"1", "true", "yes"}
+# Ускоритель напоминаний для тестов/стендов (1.0 — без ускорения)
+try:
+    ACCEL = float(os.getenv("REMINDER_ACCEL", "1.0"))
+except Exception:
+    ACCEL = 1.0
+log.info(f"⚑ flags: TEST_MODE={TEST_MODE}, LOCAL_DEV={LOCAL_DEV}, REMINDER_ACCEL={ACCEL}")
 
 # ---------- JobStore выбор ----------
 def _build_jobstores():
@@ -67,7 +73,8 @@ def start():
     if getattr(start, "_started", False):
         return
     if TEST_MODE or LOCAL_DEV:
-        log.info("🟡 TEST/LOCAL_DEV → start() пропущен (шедулер не запускаем)")
+        log.info(f"🟡 TEST/LOCAL_DEV → start() пропущен (шедулер не запускаем) "
+                 f"[TEST_MODE={TEST_MODE}, LOCAL_DEV={LOCAL_DEV}]")
         start._started = False
         return
     try:
