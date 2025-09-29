@@ -20,6 +20,7 @@ log.setLevel(logging.INFO)
 log.info("📦 reminder_engine import started")
 LOCAL_DEV = is_local_dev()
 TEST_MODE   = os.getenv("ACADEMYBOT_TEST", "0") == "1"
+ACCEL = float(os.getenv("REMINDER_ACCEL", "1.0"))  # 1.0 — без ускорения; 0.001 ≈ x1000 быстрее
 
 # ---------- JobStore выбор ----------
 def _build_jobstores():
@@ -94,6 +95,11 @@ def plan(user_id: str, func_ref, delay_sec: int) -> None:
     else:
         norm_path = func_ref.replace(":", ".", 1)
     job_id    = f"{user_id}:{norm_path}"
+    # ускоряем при REMINDER_ACCEL<1 (для интеграционных тестов)
+    try:
+        delay_sec = max(1, int(delay_sec * ACCEL))
+    except Exception:
+        pass
     run_at_ts = time.time() + delay_sec
 
     # при рестарте, если задача уже прошла – не ставим снова
@@ -115,7 +121,8 @@ def plan(user_id: str, func_ref, delay_sec: int) -> None:
         misfire_grace_time=300,
         args=[user_id, norm_path],
     )
-    log.info(f"[reminder_engine] scheduled {job_id} in {delay_sec//60} min")
+    # дружелюбный лог в секундах и минутах
+    log.info(f"[reminder_engine] scheduled {job_id} in {delay_sec}s (~{delay_sec/60:.1f} min)")
 
 # ---------- точка входа, которую увидит APScheduler -------------
 def execute_job(user_id: str, func_path: str):

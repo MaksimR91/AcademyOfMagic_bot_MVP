@@ -31,6 +31,7 @@ from utils.incoming_message import handle_message, handle_status
 from utils.supabase_token import start_supabase_ping_loop
 from utils.cleanup import cleanup_temp_files, start_memory_cleanup_loop, log_memory_usage
 from utils.env_flags import is_local_dev
+from utils import reminder_engine  # ⬅ импортируем модуль, чтобы иметь start()
 
 logger.info("💬 logger test — должен появиться в консоли Render")
 
@@ -88,6 +89,11 @@ def _bootstrap_background():
     """
     Всё тяжёлое — только в фоне, чтобы не блокировать ответ на $PORT.
     """
+    # ⏰ Планировщик напоминаний (APScheduler)
+    try:
+        reminder_engine.start()  # идемпотентный старт; в LOCAL/TEST он сам себя пропустит
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось запустить reminder_engine: {e}")
     # Планировщик ротации логов
     try:
         start_rollover_scheduler()
