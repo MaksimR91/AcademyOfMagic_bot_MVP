@@ -112,6 +112,12 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
     if client_request_date is None:
         client_request_date = time.time()
 
+    # Сервисные команды (например, #jobs) не должны сбивать таймеры/стадию
+    if (message_text or "").strip().startswith("#"):
+        logger.info("[block3c] сервисная команда — игнор")
+        return
+
+
     if wants_handover_ai(message_text):
         update_state(user_id, {
             "handover_reason": "asked_handover",
@@ -200,9 +206,11 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
         match_time = time_reply if time_reply.lower() != "нет времени" else None
         logger.info("Время проведения мероприятия от ИИ %s", match_time)
     def clean_time(raw_time: str) -> str:
+        raw_time = raw_time or ""
         match = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", raw_time)
         return match.group(0) if match else ""
     def clean_date(raw_date: str) -> str:
+        raw_date = raw_date or ""
         match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", raw_date)
         return match.group(0) if match else ""
     if match_date:
@@ -518,7 +526,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
         return
     if state.get("last_sender") == "user":
         return
-    if state.get("r1_scheduled_b3c"):
+    # проверяем факт отправки R1, а не факт постановки таймера
+    if state.get("r1_sent_b3c"):
         return
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
     reminder_prompt = load_prompt(REMINDER_1_PROMPT_PATH)
@@ -528,7 +537,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time()})
+    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time(), "r1_sent_b3c": True})
 
     # ставим таймер на второе напоминание
     plan(user_id, "blocks.block_03c:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
@@ -541,7 +550,8 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
         return
     if state.get("last_sender") == "user":
         return
-    if state.get("r2_scheduled_b3c"):
+    # проверяем факт отправки R2, а не факт постановки таймера
+    if state.get("r2_sent_b3c"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -552,7 +562,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time()})
+    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time(), "r2_sent_b3c": True})
     plan(user_id, "blocks.block_03c:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3c": True})
 

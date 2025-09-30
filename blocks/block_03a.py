@@ -9,6 +9,9 @@ from utils.reminder_engine import plan
 from logger import logger
 from utils.structured import build_structured_snapshot
 
+def _is_service_msg(text: str) -> bool:
+    return (text or "").strip().startswith("#")
+
 # Пути к промптам (оставляем 3a)
 GLOBAL_PROMPT_PATH    = "prompts/global_prompt.txt"
 STAGE_PROMPT_PATH     = "prompts/block03a_prompt.txt"
@@ -153,6 +156,12 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
     from router import route_message
     if client_request_date is None:
         client_request_date = time.time()
+
+    # сервисные команды не считаем ответом клиента и не трогаем таймеры
+    if _is_service_msg(message_text):
+        logger.info("[block3a] сервисная команда — игнор")
+        return
+
 
     if wants_handover_ai(message_text):
         update_state(user_id, {
@@ -333,6 +342,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             "last_bot_question": text_to_client,
             "summary_sent": False,
             # ВАЖНО: не трогаем availability_reply_sent
+            "last_sender": "bot",
         })
         # Не дублируем R1, если он уже стоит (идемпотентность при повторных ответах)
         cur = get_state(user_id) or {}
@@ -423,9 +433,9 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
         "stage": "block3a",
         "last_message_ts": time.time()
     })
-    # не ставим новый R1, если клиент только что ответил, либо R1 уже стоит
+     # Ставим R1 только если мы действительно задали вопрос (есть last_bot_question)
     cur = get_state(user_id) or {}
-    if cur.get("last_sender") != "user" and not cur.get("r1_scheduled_b3a"):
+    if cur.get("last_bot_question") and not cur.get("r1_scheduled_b3a"):
         plan(user_id, "blocks.block_03a:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
         update_state(user_id, {"r1_scheduled_b3a": True})
 
@@ -437,7 +447,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     # клиент уже писал после последнего вопроса → не трогаем
     if state.get("last_sender") == "user":
         return
-    if state.get("r1_scheduled_b3a"):
+    # не повторяем, если уже отправляли R1
+    if state.get("r1_sent_b3a"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -448,7 +459,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3a", "last_message_ts": time.time()})
+    update_state(user_id, {"stage": "block3a", "last_message_ts": time.time(), "r1_sent_b3a": True})
     plan(user_id, "blocks.block_03a:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
     update_state(user_id, {"r1_scheduled_b3a": True})
 
@@ -459,7 +470,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
         return
     if state.get("last_sender") == "user":
         return
-    if state.get("r2_scheduled_b3a"):
+    if state.get("r2_sent_b3a"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -470,7 +481,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3a", "last_message_ts": time.time()})
+    update_state(user_id, {"stage": "block3a", "last_message_ts": time.time(), "r2_sent_b3a": True})
     plan(user_id, "blocks.block_03a:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3a": True})
     

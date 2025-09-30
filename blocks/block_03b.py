@@ -8,6 +8,9 @@ from state.state import get_state, update_state
 from utils.reminder_engine import plan
 from logger import logger
 
+def _is_service_msg(text: str) -> bool:
+    return (text or "").strip().startswith("#")
+
 # Пути к промптам
 GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
 STAGE_PROMPT_PATH = "prompts/block03b_prompt.txt"
@@ -49,7 +52,7 @@ def render_prompt(path: str, **kwargs) -> str:
     try:
         return tmpl.format(**kwargs)
     except Exception as e:
-        logger.warning(f"[block03a] format error in {path}: {e}")
+        logger.warning(f"[block03b] format error in {path}: {e}")
         return tmpl
 
 def missing_info_keys(state):
@@ -118,7 +121,11 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
         return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
-    # Любой входящий текст от клиента «гасит» дальнейшие автокасания до явного решения
+    # Игнорируем сервисные команды (#jobs и т.п.)
+    if (message_text or "").strip().startswith("#"):
+        logger.info("[block3b] сервисная команда — игнор")
+        return
+    # Любой входящий текст клиента «гасит» автокасания до следующего вопроса
     update_state(user_id, {"last_sender": "user"})
     updated_description = (state.get("event_description", "") + "\n" + message_text).strip()
     update_state(user_id, {"event_description": updated_description})
@@ -206,13 +213,13 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
             availability = check_date_availability(date_iso, time_24, schedule)
             logger.info(f"[debug] AVAILABILITY CHECK: {availability} для {date_iso} {time_24}")
             availability_prompt = global_prompt + "\n\n" + render_prompt(
-                AVAILABILITY_PROMPT_PATH,
-                message_text=message_text,
-                date_iso=date_iso,
-                time_24=time_24,
-                client_request_date=client_request_date_str,
-                availability=availability,
-            )
+                    AVAILABILITY_PROMPT_PATH,
+                    message_text=message_text,
+                    date_iso=match_date,
+                    time_24=match_time,
+                    client_request_date=client_request_date_str,
+                    availability=availability,
+                )
             availability_reply = ask_openai(availability_prompt).strip()
             logger.info("availability_reply %s", availability_reply)
 
@@ -376,13 +383,13 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                 availability = check_date_availability(match_date, match_time, schedule)
                 logger.info(f"[debug] Проверка доступности: {availability} для {match_date} {match_time}")
                 availability_prompt = global_prompt + "\n\n" + render_prompt(
-                AVAILABILITY_PROMPT_PATH,
-                message_text=message_text,
-                date_iso=date_iso,
-                time_24=time_24,
-                client_request_date=client_request_date_str,
-                availability=availability,
-            )
+                    AVAILABILITY_PROMPT_PATH,
+                    message_text=message_text,
+                    date_iso=match_date,
+                    time_24=match_time,
+                    client_request_date=client_request_date_str,
+                    availability=availability,
+                )
                 availability_reply = ask_openai(availability_prompt).strip()
                 logger.info("availability_reply %s", availability_reply)
 
@@ -431,7 +438,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
 
     # Финальные обновления
     update_state(user_id, {
-        "stage": "block3a",
+        "stage": "block3b",
         "last_message_ts": time.time()
     })
     # не ставим новый R1, если клиент только что ответил, либо R1 уже стоит
@@ -447,7 +454,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     # клиент уже писал после последнего вопроса → не трогаем
     if state.get("last_sender") == "user":
         return
-    if state.get("r1_scheduled_b3b"):
+    if state.get("r1_sent_b3b"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -458,7 +465,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time()})
+    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r1_sent_b3b": True})
 
     # ставим таймер на второе напоминание
     plan(user_id, "blocks.block_03b:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
@@ -472,7 +479,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
         return
     if state.get("last_sender") == "user":
         return
-    if state.get("r2_scheduled_b3b"):
+    if state.get("r2_sent_b3b"):
         return
 
     global_prompt   = load_prompt(GLOBAL_PROMPT_PATH)
@@ -483,7 +490,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time()})
+    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r2_sent_b3b": True})
     plan(user_id, "blocks.block_03b:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3b": True})
 
