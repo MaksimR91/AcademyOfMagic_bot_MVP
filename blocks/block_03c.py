@@ -248,7 +248,8 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
             update_state(user_id, {
                 "availability_reply_sent": True,
                 "summary_and_availability_sent": True,
-                "date_decision_flag": availability
+                "date_decision_flag": availability,
+                "last_sender": "bot"
             })
 
             # 🔒 безопасная бронь слота, без жёсткого импорта
@@ -309,7 +310,8 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
             "stage": "block3c",  # <--- ВАЖНО: фиксация stage
             "clarification_attempts": clarification_attempts + 1,
             "last_bot_question": text_to_client,
-            "summary_sent": False
+            "summary_sent": False,
+            "last_sender": "bot"
         })
         cur = get_state(user_id) or {}
         if not cur.get("r1_scheduled_b3c"):
@@ -363,9 +365,9 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
             logger.info("Время проведения мероприятия от ИИ %s", match_time)
 
             def clean_time(raw_time: str) -> str:
+                raw_time = raw_time or ""
                 match = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", raw_time)
                 return match.group(0) if match else ""
-
             match_time = clean_time(match_time)
 
             # Определяем тип места
@@ -414,7 +416,8 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
                 update_state(user_id, {
                     "availability_reply_sent": True,
                     "summary_and_availability_sent": True,
-                    "date_decision_flag": availability
+                    "date_decision_flag": availability,
+                    "last_sender": "bot"
                 })
 
                 # Сохраняем слот в расписание
@@ -474,7 +477,8 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
             update_state(user_id, {
                 "availability_reply_sent": True,
                 "summary_and_availability_sent": True,
-                "date_decision_flag": availability
+                "date_decision_flag": availability,
+                "last_sender": "bot"
             })
 
              # fallback-бронь, безопасно
@@ -516,7 +520,7 @@ def handle_block3c(message_text, user_id, send_reply_func, client_request_date=N
         "last_message_ts": time.time()
     })
     cur = get_state(user_id) or {}
-    if cur.get("last_sender") != "user" and not cur.get("r1_scheduled_b3c"):
+    if not cur.get("r1_scheduled_b3c"):
         plan(user_id, "blocks.block_03c:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
         update_state(user_id, {"r1_scheduled_b3c": True})
 
@@ -537,7 +541,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time(), "r1_sent_b3c": True})
+    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time(), "r1_sent_b3c": True, "last_sender": "bot"})
 
     # ставим таймер на второе напоминание
     plan(user_id, "blocks.block_03c:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
@@ -562,7 +566,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time(), "r2_sent_b3c": True})
+    update_state(user_id, {"stage": "block3c", "last_message_ts": time.time(), "r2_sent_b3c": True, "last_sender": "bot"})
     plan(user_id, "blocks.block_03c:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3c": True})
 

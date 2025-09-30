@@ -112,6 +112,12 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
     if client_request_date is None:
         client_request_date = time.time()
 
+    # 0) Сервисные команды (#jobs и т.п.) не трогаем вовсе
+    if _is_service_msg(message_text):
+        logger.info("[block3b] сервисная команда — игнор")
+        return
+
+
     if wants_handover_ai(message_text):
         update_state(user_id, {
             "handover_reason": "asked_handover",
@@ -121,10 +127,6 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
         return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
-    # Игнорируем сервисные команды (#jobs и т.п.)
-    if (message_text or "").strip().startswith("#"):
-        logger.info("[block3b] сервисная команда — игнор")
-        return
     # Любой входящий текст клиента «гасит» автокасания до следующего вопроса
     update_state(user_id, {"last_sender": "user"})
     updated_description = (state.get("event_description", "") + "\n" + message_text).strip()
@@ -195,9 +197,11 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
             match_time = time_reply if time_reply.lower() != "нет времени" else None
             logger.info("Время проведения мероприятия от ИИ %s", match_time)
     def clean_time(raw_time: str) -> str:
+        raw_time = raw_time or ""
         match = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", raw_time)
         return match.group(0) if match else ""
     def clean_date(raw_date: str) -> str:
+        raw_date = raw_date or ""
         match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", raw_date)
         return match.group(0) if match else ""
 
@@ -214,19 +218,20 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
             logger.info(f"[debug] AVAILABILITY CHECK: {availability} для {date_iso} {time_24}")
             availability_prompt = global_prompt + "\n\n" + render_prompt(
                     AVAILABILITY_PROMPT_PATH,
-                    message_text=message_text,
-                    date_iso=match_date,
-                    time_24=match_time,
-                    client_request_date=client_request_date_str,
-                    availability=availability,
-                )
+                message_text=message_text,
+                date_iso=date_iso,
+                time_24=time_24,
+                client_request_date=client_request_date_str,
+                availability=availability,
+            )
             availability_reply = ask_openai(availability_prompt).strip()
             logger.info("availability_reply %s", availability_reply)
 
             send_reply_func(availability_reply)
             update_state(user_id, {
                 "availability_reply_sent": True,
-                "summary_and_availability_sent": True
+                "summary_and_availability_sent": True,
+                "last_sender": "bot"
             })
 
              # 🔒 безопасная бронь слота, без жёсткого импорта
@@ -290,6 +295,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
             "last_bot_question": text_to_client,
             "summary_sent": False,
             "availability_reply_sent": False,
+            "last_sender": "bot"
         })
         # Не дублируем R1, если он уже стоит (идемпотентность при повторных ответах)
         cur = get_state(user_id) or {}
@@ -346,6 +352,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
             logger.info("Время проведения мероприятия от ИИ %s", match_time)
 
             def clean_time(raw_time: str) -> str:
+                raw_time = raw_time or ""
                 match = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", raw_time)
                 return match.group(0) if match else ""
 
@@ -396,7 +403,8 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                 send_reply_func(availability_reply)
                 update_state(user_id, {
                     "availability_reply_sent": True,
-                    "summary_and_availability_sent": True
+                    "summary_and_availability_sent": True,
+                    "last_sender": "bot"
                 })
 
                 # Сохраняем слот в расписание (безопасно)
@@ -441,9 +449,10 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
         "stage": "block3b",
         "last_message_ts": time.time()
     })
-    # не ставим новый R1, если клиент только что ответил, либо R1 уже стоит
+    # Фолбэк: если R1 ещё не стоял — поставим (без оглядки на last_sender,
+    # потому что выше мы уже корректно выставляем last_sender="bot" после вопроса/ответа бота)
     cur = get_state(user_id) or {}
-    if cur.get("last_sender") != "user" and not cur.get("r1_scheduled_b3b"):
+    if not cur.get("r1_scheduled_b3b"):
         plan(user_id, "blocks.block_03b:send_first_reminder_if_silent", DELAY_TO_BLOCK_3_1_HOURS * 3600)
         update_state(user_id, {"r1_scheduled_b3b": True})
 
@@ -465,7 +474,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r1_sent_b3b": True})
+    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r1_sent_b3b": True, "last_sender": "bot"})
 
     # ставим таймер на второе напоминание
     plan(user_id, "blocks.block_03b:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
@@ -490,7 +499,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r2_sent_b3b": True})
+    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r2_sent_b3b": True, "last_sender": "bot"})
     plan(user_id, "blocks.block_03b:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3b": True})
 
