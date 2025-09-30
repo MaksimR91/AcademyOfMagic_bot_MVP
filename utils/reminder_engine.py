@@ -31,16 +31,15 @@ log.info(f"⚑ flags: TEST_MODE={TEST_MODE}, LOCAL_DEV={LOCAL_DEV}, REMINDER_ACC
 # ---------- JobStore выбор ----------
 def _build_jobstores():
     """
-    Возвращает словарь jobstores без побочных эффектов.
-    В LOCAL_DEV всегда MemoryJobStore. В проде — SQLAlchemyJobStore/Fallback.
+    LOCAL_DEV=1 или ACADEMYBOT_TEST=1 → MemoryJobStore.
+    PROD (оба 0) → Postgres (Supabase). При ошибке — фоллбек в память.
     """
-    if LOCAL_DEV:
-        log.info("🟢 LOCAL_DEV=1 → MemoryJobStore (без БД)")
+    if LOCAL_DEV or TEST_MODE:
+        log.info("🧠 Jobstore = Memory (LOCAL_DEV/TEST_MODE)")
         return {"default": MemoryJobStore()}
     try:
-        # 1) Предпочтительно: готовый DSN
+        # PROD: берём DSN из SUPABASE_DB_URL; если нет — собираем из SUPABASE_URL
         pg_url = os.getenv("SUPABASE_DB_URL")
-        # 2) Fallback: построить из SUPABASE_URL (если есть)
         if not pg_url:
             raw_supabase = os.getenv("SUPABASE_URL")
             if not raw_supabase:
@@ -51,12 +50,14 @@ def _build_jobstores():
                 .replace(".supabase.co", ".supabase.co/postgres")
             )
         log.info(f"🔗 reminder_engine PG url → {pg_url.split('@')[-1].split('?')[0]}")
-        return {"default": SQLAlchemyJobStore(
-            url=pg_url,
-            engine_options={"connect_args": {"connect_timeout": 5}},
-        )}
+        return {
+            "default": SQLAlchemyJobStore(
+                url=pg_url,
+                engine_options={"connect_args": {"connect_timeout": 5}},
+            )
+        }
     except Exception as e:
-        log.exception(f"⚠️ SQLAlchemyJobStore init failed → MemoryJobStore: {e}")
+        log.warning(f"⚠️ Postgres недоступен → MemoryJobStore: {e}")
         return {"default": MemoryJobStore()}
 
 # ---------- APScheduler старт ----------
@@ -64,18 +65,10 @@ jobstores = _build_jobstores()
 sched = BackgroundScheduler(jobstores=jobstores, timezone="UTC")
 
 # ВНИМАНИЕ: не стартуем шедулер при импорте.
-# В проде зови start() из входной точки приложения.
+# Входная точка вызывает start().
 def start():
-    """
-    Запустить планировщик (для прод/стейджинг). В тестах и LOCAL_DEV не обязателен.
-    Идемпотентен: повторный вызов ничего не делает.
-    """
+    """Запустить планировщик. Всегда стартуем (и в TEST/LOCAL_DEV — с Memory)."""
     if getattr(start, "_started", False):
-        return
-    if TEST_MODE or LOCAL_DEV:
-        log.info(f"🟡 TEST/LOCAL_DEV → start() пропущен (шедулер не запускаем) "
-                 f"[TEST_MODE={TEST_MODE}, LOCAL_DEV={LOCAL_DEV}]")
-        start._started = False
         return
     try:
         sched.start()
