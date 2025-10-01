@@ -271,8 +271,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     last_user_ts = float(st.get("last_user_ts") or 0)
     if st.get("last_sender") == "user" or (last_user_ts > last_bot_ts):
         return
-    # идемпотентность: если уже ставили R1 — выходим
-    if st.get("r1_scheduled_b2"):
+    # идемпотентность: если уже ОТПРАВЛЯЛИ R1 — выходим
+    if st.get("r1_sent_b2"):
         return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
@@ -308,7 +308,8 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     last_user_ts = float(st.get("last_user_ts") or 0)
     if st.get("last_sender") == "user" or (last_user_ts > last_bot_ts):
         return
-    if st.get("r2_scheduled_b2"):
+    # идемпотентность: если уже ОТПРАВЛЯЛИ R2 — выходим
+    if st.get("r2_sent_b2"):
         return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
