@@ -5,6 +5,7 @@ from utils.reminder_engine import plan
 from state.state import update_state
 from logger import logger
 from importlib import import_module
+import os
 
 # Пути к промптам
 GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
@@ -88,6 +89,11 @@ def handle_block2(message_text, user_id, send_reply_func):
         logger.info(f"[error] ❌ Ошибка при ответе клиенту: {e}")
     if reply_to_client:
         send_reply_func(reply_to_client)
+        # важно: помечаем, что последнее сообщение — от бота
+        state.update_state(user_id, {
+            "last_sender": "bot",
+            "last_bot_ts": time.time()
+        })
 
     state.update_state(user_id, {
         "stage": "block2",
@@ -110,7 +116,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     # и рубим повторные касания в блоке 2.
     state.update_state(user_id, {
         "last_sender": "user",
-        "last_message_ts": time.time(),
+        "last_user_ts": time.time(),
         "cancel_block2_reminders": True
     })
     # 🔁 Хендовер по явной просьбе клиента (теперь проверяем здесь, а не в handle_block2)
@@ -130,6 +136,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "uninformative_replies": 0,
             "last_sender": "user",
             "last_message_ts": ts,
+            "last_user_ts": ts,
             "cancel_block2_reminders": True
         })
         if rb == "детское":
@@ -172,6 +179,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "show_type": "неизвестно",
             "last_sender": "user",
             "last_message_ts": time.time(),
+            "last_user_ts": time.time(),
             "cancel_block2_reminders": False
         })
         count = st.get("uninformative_replies", 0) + 1
@@ -195,6 +203,11 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             clarification_reply = ""
         if clarification_reply:
             send_reply_func(clarification_reply)
+            # фиксируем последнее бот-сообщение, как в 3a
+            state.update_state(user_id, {
+                "last_sender": "bot",
+                "last_bot_ts": time.time()
+            })
 
         state.update_state(user_id, {
             "show_type": "неизвестно",
@@ -216,6 +229,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         "uninformative_replies": 0,
         "last_sender": "user",
         "last_message_ts": ts,
+        "last_user_ts": ts,
         "cancel_block2_reminders": True
     })
 
@@ -245,7 +259,10 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
         return
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил или сменился блок — ничего не делаем
-    if st.get("last_sender") == "user":
+    # если клиент отвечал после последнего бот-сообщения — не шлём R1
+    last_bot_ts = float(st.get("last_bot_ts") or 0)
+    last_user_ts = float(st.get("last_user_ts") or 0)
+    if st.get("last_sender") == "user" or (last_user_ts > last_bot_ts):
         return
     # идемпотентность: если уже ставили R1 — выходим
     if st.get("r1_scheduled_b2"):
@@ -258,7 +275,14 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    state.update_state(user_id, {"stage": "block2", "last_message_ts": time.time()})
+    now_ts = time.time()
+    state.update_state(user_id, {
+        "stage": "block2",
+        "last_message_ts": now_ts,
+        "last_sender": "bot",
+        "last_bot_ts": now_ts,
+        "r1_sent_b2": True
+    })
 
     # Подготовка таймера на второе напоминание через 12 часов (в блок 2.2)
     plan(user_id, "blocks.block_02:send_second_reminder_if_silent", DELAY_TO_BLOCK_2_2_HOURS * 3600)
@@ -272,7 +296,10 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
         return
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил — ничего не делаем
-    if st.get("last_sender") == "user":
+    # если клиент отвечал после последнего бот-сообщения — не шлём R2
+    last_bot_ts = float(st.get("last_bot_ts") or 0)
+    last_user_ts = float(st.get("last_user_ts") or 0)
+    if st.get("last_sender") == "user" or (last_user_ts > last_bot_ts):
         return
     if st.get("r2_scheduled_b2"):
         return
@@ -284,7 +311,14 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    state.update_state(user_id, {"stage": "block2", "last_message_ts": time.time()})
+    now_ts = time.time()
+    state.update_state(user_id, {
+        "stage": "block2",
+        "last_message_ts": now_ts,
+        "last_sender": "bot",
+        "last_bot_ts": now_ts,
+        "r2_sent_b2": True
+    })
     plan(user_id, "blocks.block_02:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     state.update_state(user_id, {"r2_scheduled_b2": True})
 
@@ -298,6 +332,11 @@ def finalize_if_still_silent(user_id, send_reply_func):
         return  # Ответил — всё ок
     # идемпотентность финала
     if st2.get("fin_scheduled_b2_done"):
+        return
+    # если клиент ответил после последнего бот-сообщения — не хендоверим
+    last_bot_ts = float(st2.get("last_bot_ts") or 0)
+    last_user_ts = float(st2.get("last_user_ts") or 0)
+    if last_user_ts > last_bot_ts:
         return
     state.update_state(user_id, {
         "handover_reason": "no_response_after_2_2",
