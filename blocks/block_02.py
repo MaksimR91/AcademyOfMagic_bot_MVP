@@ -269,7 +269,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
-    if st.get("last_sender") == "user" or (last_user_ts > last_bot_ts):
+    if last_user_ts > last_bot_ts:
         return
     # идемпотентность: если уже ОТПРАВЛЯЛИ R1 — выходим
     if st.get("r1_sent_b2"):
@@ -306,7 +306,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
-    if st.get("last_sender") == "user" or (last_user_ts > last_bot_ts):
+    if last_user_ts > last_bot_ts:
         return
     # идемпотентность: если уже ОТПРАВЛЯЛИ R2 — выходим
     if st.get("r2_sent_b2"):
