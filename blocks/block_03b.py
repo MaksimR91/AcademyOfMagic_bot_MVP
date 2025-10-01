@@ -1,5 +1,6 @@
 # block_03b.py
 import time
+import os
 import re
 from utils.ask_openai import ask_openai
 from utils.wants_handover_ai import wants_handover_ai
@@ -107,6 +108,15 @@ def _normalize_compere(val: str) -> str:
     if any(x in s for x in pos):
         return "будет"
     return s  # оставим как есть, если что-то экзотическое
+
+# --- учитываем ускорение таймеров из reminder_engine (REMINDER_ACCEL) ---
+def _eff_delay_sec(hours: float) -> float:
+    try:
+        accel = float(os.getenv("REMINDER_ACCEL", "1.0"))
+    except Exception:
+        accel = 1.0
+    return hours * 3600.0 * accel
+
 
 def handle_block3b(message_text, user_id, send_reply_func, client_request_date=None):
     if client_request_date is None:
@@ -488,8 +498,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     last_bot_ts = float(state.get("last_bot_ts") or 0)
     last_user_ts = float(state.get("last_user_ts") or 0)
     now_ts = time.time()
-    # если с момента последнего бот-сообщения прошло меньше delay — это «просроченный» таймер старого цикла
-    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_1_HOURS * 3600:
+    # если с момента последнего бот-сообщения прошло меньше ЭФФЕКТИВНОЙ задержки — это «просроченный» таймер старого цикла
+    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_3_1_HOURS):
         return
     if last_user_ts > last_bot_ts:
         return
@@ -527,7 +537,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     last_user_ts = float(state.get("last_user_ts") or 0)
     now_ts = time.time()
     # защита от «просроченных» таймеров старого цикла
-    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_2_HOURS * 3600:
+    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_3_2_HOURS):
         return
     if last_user_ts > last_bot_ts:
         return
@@ -557,6 +567,11 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 def finalize_if_still_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3b":
+        return
+    # если клиент ответил после последнего бот-сообщения — не хендоверим
+    last_bot_ts = float(state.get("last_bot_ts") or 0)
+    last_user_ts = float(state.get("last_user_ts") or 0)
+    if last_user_ts > last_bot_ts:
         return
     if state.get("fin_scheduled_b3b_done"):
         return
