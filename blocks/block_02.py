@@ -105,6 +105,8 @@ def handle_block2(message_text, user_id, send_reply_func):
     plan(user_id,
          "blocks.block_02:send_first_reminder_if_silent",
          DELAY_TO_BLOCK_2_1_HOURS * 3600)
+    # помечаем, что R1 уже запланирован (идемпотентность)
+    state.update_state(user_id, {"r1_scheduled_b2": True})
     return
 
 
@@ -114,9 +116,11 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     st = state.get_state(user_id) or {}
     # На любой входящий ответ пользователя сразу помечаем, что это ответ
     # и рубим повторные касания в блоке 2.
+    now_ts = time.time()
     state.update_state(user_id, {
         "last_sender": "user",
-        "last_user_ts": time.time(),
+        "last_message_ts": now_ts,
+        "last_user_ts": now_ts,
         "cancel_block2_reminders": True
     })
     # 🔁 Хендовер по явной просьбе клиента (теперь проверяем здесь, а не в handle_block2)
@@ -217,9 +221,12 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "cancel_block2_reminders": False
         })
 
-        plan(user_id,
-             "blocks.block_02:send_first_reminder_if_silent",
-             DELAY_TO_BLOCK_2_1_HOURS * 3600)
+        # R1 ставим только если ещё не ставили ранее
+        if not (state.get_state(user_id) or {}).get("r1_scheduled_b2"):
+            plan(user_id,
+                 "blocks.block_02:send_first_reminder_if_silent",
+                 DELAY_TO_BLOCK_2_1_HOURS * 3600)
+            state.update_state(user_id, {"r1_scheduled_b2": True})
         return
 
     # Всё ок — переходим в нужный блок (пишем только через update_state)
