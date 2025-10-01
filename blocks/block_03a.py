@@ -171,8 +171,12 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
         return route_message(message_text, user_id, force_stage="block5")
 
     state = get_state(user_id) or {}
-    # Любой входящий текст от клиента «гасит» дальнейшие автокасания до явного решения
-    update_state(user_id, {"last_sender": "user"})
+    # Любой входящий текст от клиента «гасит» автокасания до явного решения
+    now_ts = time.time()
+    update_state(user_id, {
+        "last_sender": "user",
+        "last_user_ts": now_ts
+    })
     prev_info = state.get("event_description", "")
     updated_description = (prev_info + "\n" + (message_text or "")).strip()
     update_state(user_id, {"event_description": updated_description})
@@ -282,10 +286,18 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             logger.info("availability_reply %s", availability_reply)
 
             send_reply_func(availability_reply)
+            now_ts = time.time()
+            # новый цикл напоминаний: обнуляем флаги и разрешаем перепланировку
             update_state(user_id, {
                 "availability_reply_sent": True,
                 "summary_and_availability_sent": True,
-                "date_decision_flag": availability
+                "date_decision_flag": availability,
+                "last_sender": "bot",
+                "last_bot_ts": now_ts,
+                "r1_sent_b3a": False,
+                "r2_sent_b3a": False,
+                "r1_scheduled_b3a": False,
+                "r2_scheduled_b3a": False
             })
              # Если слот свободен — фиксируем его в расписании
             # 🔒 Пытаемся забронировать слот, если он свободен
@@ -336,6 +348,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
         logger.info("text_to_client %s", text_to_client)
 
         send_reply_func(text_to_client)
+        now_ts = time.time()
         update_state(user_id, {
             "stage": "block3a",
             "clarification_attempts": clarification_attempts + 1,
@@ -343,6 +356,12 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             "summary_sent": False,
             # ВАЖНО: не трогаем availability_reply_sent
             "last_sender": "bot",
+            "last_bot_ts": now_ts,
+            # новый цикл напоминаний
+            "r1_sent_b3a": False,
+            "r2_sent_b3a": False,
+            "r1_scheduled_b3a": False,
+            "r2_scheduled_b3a": False
         })
         # Не дублируем R1, если он уже стоит (идемпотентность при повторных ответах)
         cur = get_state(user_id) or {}
@@ -392,10 +411,18 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
             logger.info("[fallback] availability_reply %s", availability_reply)
 
             send_reply_func(availability_reply)
+            now_ts = time.time()
             update_state(user_id, {
                 "availability_reply_sent": True,
                 "summary_and_availability_sent": True,
-                "date_decision_flag": availability
+                "date_decision_flag": availability,
+                "last_sender": "bot",
+                "last_bot_ts": now_ts,
+                # новый цикл напоминаний
+                "r1_sent_b3a": False,
+                "r2_sent_b3a": False,
+                "r1_scheduled_b3a": False,
+                "r2_scheduled_b3a": False
             })
              # 🔒 Пытаемся забронировать слот, если он свободен (fallback)
             if availability == "available":
@@ -444,8 +471,14 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3a":
         return
-    # клиент уже писал после последнего вопроса → не трогаем
-    if state.get("last_sender") == "user":
+    # защита от «просроченных» таймеров и ответов клиента
+    last_bot_ts = float(state.get("last_bot_ts") or 0)
+    last_user_ts = float(state.get("last_user_ts") or 0)
+    now_ts = time.time()
+    # если с момента последнего бот-сообщения прошло меньше delay — это «старый» таймер
+    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_1_HOURS * 3600:
+        return
+    if last_user_ts > last_bot_ts:
         return
     # не повторяем, если уже отправляли R1
     if state.get("r1_sent_b3a"):
@@ -459,7 +492,14 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3a", "last_message_ts": time.time(), "r1_sent_b3a": True})
+    now_ts = time.time()
+    update_state(user_id, {
+        "stage": "block3a",
+        "last_message_ts": now_ts,
+        "r1_sent_b3a": True,
+        "last_sender": "bot",
+        "last_bot_ts": now_ts
+    })
     plan(user_id, "blocks.block_03a:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
     update_state(user_id, {"r1_scheduled_b3a": True})
 
@@ -468,7 +508,13 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3a":
         return
-    if state.get("last_sender") == "user":
+    # защита от «просроченных» таймеров и ответов клиента
+    last_bot_ts = float(state.get("last_bot_ts") or 0)
+    last_user_ts = float(state.get("last_user_ts") or 0)
+    now_ts = time.time()
+    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_2_HOURS * 3600:
+        return
+    if last_user_ts > last_bot_ts:
         return
     if state.get("r2_sent_b3a"):
         return
@@ -481,7 +527,14 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3a", "last_message_ts": time.time(), "r2_sent_b3a": True})
+    now_ts = time.time()
+    update_state(user_id, {
+        "stage": "block3a",
+        "last_message_ts": now_ts,
+        "r2_sent_b3a": True,
+        "last_sender": "bot",
+        "last_bot_ts": now_ts
+    })
     plan(user_id, "blocks.block_03a:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3a": True})
     
@@ -490,6 +543,11 @@ def finalize_if_still_silent(user_id, send_reply_func):
     from router import route_message
     state = get_state(user_id)
     if not state or state.get("stage") != "block3a":
+        return
+    # если клиент ответил после последнего бот-сообщения — не хендоверим
+    last_bot_ts = float(state.get("last_bot_ts") or 0)
+    last_user_ts = float(state.get("last_user_ts") or 0)
+    if last_user_ts > last_bot_ts:
         return
     if state.get("fin_scheduled_b3a_done"):
         return

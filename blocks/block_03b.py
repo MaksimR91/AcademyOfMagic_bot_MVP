@@ -128,7 +128,11 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
 
     state = get_state(user_id) or {}
     # Любой входящий текст клиента «гасит» автокасания до следующего вопроса
-    update_state(user_id, {"last_sender": "user"})
+    now_ts = time.time()
+    update_state(user_id, {
+        "last_sender": "user",
+        "last_user_ts": now_ts
+    })
     updated_description = (state.get("event_description", "") + "\n" + message_text).strip()
     update_state(user_id, {"event_description": updated_description})
 
@@ -228,10 +232,17 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
             logger.info("availability_reply %s", availability_reply)
 
             send_reply_func(availability_reply)
+            now_ts = time.time()
+            # новый цикл напоминаний: обнуляем «отправлены» и разрешаем перепланировку
             update_state(user_id, {
                 "availability_reply_sent": True,
                 "summary_and_availability_sent": True,
-                "last_sender": "bot"
+                "last_sender": "bot",
+                "last_bot_ts": now_ts,
+                "r1_sent_b3b": False,
+                "r2_sent_b3b": False,
+                "r1_scheduled_b3b": False,
+                "r2_scheduled_b3b": False
             })
 
              # 🔒 безопасная бронь слота, без жёсткого импорта
@@ -288,14 +299,20 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
         text_to_client = ask_openai(prompt).strip()
         logger.info("text_to_client %s", text_to_client)
 
-        send_reply_func(text_to_client)
+        now_ts = time.time()
         update_state(user_id, {
             "stage": "block3b",  # <--- ВАЖНО: фиксация stage
             "clarification_attempts": clarification_attempts + 1,
             "last_bot_question": text_to_client,
             "summary_sent": False,
             "availability_reply_sent": False,
-            "last_sender": "bot"
+            "last_sender": "bot",
+            "last_bot_ts": now_ts,
+            # новый цикл напоминаний
+            "r1_sent_b3b": False,
+            "r2_sent_b3b": False,
+            "r1_scheduled_b3b": False,
+            "r2_scheduled_b3b": False
         })
         # Не дублируем R1, если он уже стоит (идемпотентность при повторных ответах)
         cur = get_state(user_id) or {}
@@ -401,10 +418,17 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
                 logger.info("availability_reply %s", availability_reply)
 
                 send_reply_func(availability_reply)
+                now_ts = time.time()
                 update_state(user_id, {
                     "availability_reply_sent": True,
                     "summary_and_availability_sent": True,
-                    "last_sender": "bot"
+                    "last_sender": "bot",
+                    "last_bot_ts": now_ts,
+                    # новый цикл напоминаний
+                    "r1_sent_b3b": False,
+                    "r2_sent_b3b": False,
+                    "r1_scheduled_b3b": False,
+                    "r2_scheduled_b3b": False
                 })
 
                 # Сохраняем слот в расписание (безопасно)
@@ -460,8 +484,14 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3b":
         return
-    # клиент уже писал после последнего вопроса → не трогаем
-    if state.get("last_sender") == "user":
+    # если клиент писал ПОСЛЕ последнего сообщения бота — не шлём
+    last_bot_ts = float(state.get("last_bot_ts") or 0)
+    last_user_ts = float(state.get("last_user_ts") or 0)
+    now_ts = time.time()
+    # если с момента последнего бот-сообщения прошло меньше delay — это «просроченный» таймер старого цикла
+    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_1_HOURS * 3600:
+        return
+    if last_user_ts > last_bot_ts:
         return
     if state.get("r1_sent_b3b"):
         return
@@ -474,7 +504,14 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r1_sent_b3b": True, "last_sender": "bot"})
+    now_ts = time.time()
+    update_state(user_id, {
+        "stage": "block3b",
+        "last_message_ts": now_ts,
+        "r1_sent_b3b": True,
+        "last_sender": "bot",
+        "last_bot_ts": now_ts
+    })
 
     # ставим таймер на второе напоминание
     plan(user_id, "blocks.block_03b:send_second_reminder_if_silent", DELAY_TO_BLOCK_3_2_HOURS * 3600)
@@ -486,7 +523,13 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     state = get_state(user_id)
     if not state or state.get("stage") != "block3b":
         return
-    if state.get("last_sender") == "user":
+    last_bot_ts = float(state.get("last_bot_ts") or 0)
+    last_user_ts = float(state.get("last_user_ts") or 0)
+    now_ts = time.time()
+    # защита от «просроченных» таймеров старого цикла
+    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_2_HOURS * 3600:
+        return
+    if last_user_ts > last_bot_ts:
         return
     if state.get("r2_sent_b3b"):
         return
@@ -499,7 +542,14 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     reply = ask_openai(full_prompt)
     send_reply_func(reply)
 
-    update_state(user_id, {"stage": "block3b", "last_message_ts": time.time(), "r2_sent_b3b": True, "last_sender": "bot"})
+    now_ts = time.time()
+    update_state(user_id, {
+        "stage": "block3b",
+        "last_message_ts": now_ts,
+        "r2_sent_b3b": True,
+        "last_sender": "bot",
+        "last_bot_ts": now_ts
+    })
     plan(user_id, "blocks.block_03b:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     update_state(user_id, {"r2_scheduled_b3b": True})
 
