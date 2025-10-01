@@ -1,5 +1,6 @@
 # block_03a.py
 import time
+import os
 import re
 from utils.ask_openai import ask_openai
 from utils.wants_handover_ai import wants_handover_ai
@@ -151,6 +152,16 @@ def _clean_time(raw_time: str) -> str:
 def _clean_date(raw_date: str) -> str:
     m = re.search(r"\b\d{4}-\d{2}-\d{2}\b", raw_date or "")
     return m.group(0) if m else ""
+
+# --- учитываем ускорение таймеров из reminder_engine (REMINDER_ACCEL) ---
+def _eff_delay_sec(hours: float) -> float:
+    try:
+        accel = float(os.getenv("REMINDER_ACCEL", "1.0"))
+    except Exception:
+        accel = 1.0
+    # планировщик ставит задачи с учётом ACCEL → проверка тоже должна быть ускоренной
+    return hours * 3600.0 * accel
+
 
 def handle_block3a(message_text, user_id, send_reply_func, client_request_date=None):
     from router import route_message
@@ -475,8 +486,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     last_bot_ts = float(state.get("last_bot_ts") or 0)
     last_user_ts = float(state.get("last_user_ts") or 0)
     now_ts = time.time()
-    # если с момента последнего бот-сообщения прошло меньше delay — это «старый» таймер
-    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_1_HOURS * 3600:
+    # если с момента последнего бот-сообщения прошло меньше ЭФФЕКТИВНОЙ задержки — это «старый» таймер
+    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_3_1_HOURS):
         return
     if last_user_ts > last_bot_ts:
         return
@@ -512,7 +523,7 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     last_bot_ts = float(state.get("last_bot_ts") or 0)
     last_user_ts = float(state.get("last_user_ts") or 0)
     now_ts = time.time()
-    if now_ts - last_bot_ts < DELAY_TO_BLOCK_3_2_HOURS * 3600:
+    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_3_2_HOURS):
         return
     if last_user_ts > last_bot_ts:
         return
