@@ -106,6 +106,13 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     logger.info(f"[debug] 👤 handle_block2_user_reply: user={user_id}, text={message_text}")
     state = _state()
     st = state.get_state(user_id) or {}
+    # На любой входящий ответ пользователя сразу помечаем, что это ответ
+    # и рубим повторные касания в блоке 2.
+    state.update_state(user_id, {
+        "last_sender": "user",
+        "last_message_ts": time.time(),
+        "cancel_block2_reminders": True
+    })
     # 🔁 Хендовер по явной просьбе клиента (теперь проверяем здесь, а не в handle_block2)
     if wants_handover_ai(message_text):
         update_state(user_id, {
@@ -122,7 +129,8 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "show_type": rb,
             "uninformative_replies": 0,
             "last_sender": "user",
-            "last_message_ts": ts
+            "last_message_ts": ts,
+            "cancel_block2_reminders": True
         })
         if rb == "детское":
             next_block = "block3a"
@@ -163,7 +171,8 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         state.update_state(user_id, {
             "show_type": "неизвестно",
             "last_sender": "user",
-            "last_message_ts": time.time()
+            "last_message_ts": time.time(),
+            "cancel_block2_reminders": False
         })
         count = st.get("uninformative_replies", 0) + 1
 
@@ -191,7 +200,8 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "show_type": "неизвестно",
             "uninformative_replies": count,
             "last_sender": "bot",
-            "last_message_ts": time.time()
+            "last_message_ts": time.time(),
+            "cancel_block2_reminders": False
         })
 
         plan(user_id,
@@ -205,7 +215,8 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         "show_type": show_type,
         "uninformative_replies": 0,
         "last_sender": "user",
-        "last_message_ts": ts
+        "last_message_ts": ts,
+        "cancel_block2_reminders": True
     })
 
     if show_type == "детское":
@@ -221,12 +232,17 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         next_block = "block5"  # fallback на всякий случай
 
     from router import route_message
+    # ЯВНО фиксируем сцену перед маршрутизацией (как и в rule-based ветке)
+    state.update_state(user_id, {"stage": next_block})
     return route_message(message_text, user_id, force_stage=next_block)
 
 
 def send_first_reminder_if_silent(user_id, send_reply_func):
     state = _state()
     st = state.get_state(user_id)
+    # Глобальный рубильник
+    if st and st.get("cancel_block2_reminders"):
+        return
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил или сменился блок — ничего не делаем
     if st.get("last_sender") == "user":
@@ -252,6 +268,8 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
 def send_second_reminder_if_silent(user_id, send_reply_func):
     state = _state()
     st = state.get_state(user_id)
+    if st and st.get("cancel_block2_reminders"):
+        return
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил — ничего не делаем
     if st.get("last_sender") == "user":
@@ -274,6 +292,8 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 def finalize_if_still_silent(user_id, send_reply_func):
     state = _state()
     st2 = state.get_state(user_id)
+    if st2 and st2.get("cancel_block2_reminders"):
+        return
     if not st2 or st2.get("stage") != "block2":
         return  # Ответил — всё ок
     # идемпотентность финала
