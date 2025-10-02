@@ -3,7 +3,7 @@ from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import os, time, threading, requests
 from logger import logger
-from utils.supabase_token import save_token_to_supabase, load_token
+from utils.supabase_token import save_token as persist_token_to_pg, load_token
 from utils.env_flags import is_local_dev
 
 LOCAL_DEV = is_local_dev()
@@ -29,7 +29,7 @@ def init_token() -> None:
     global _WHATSAPP_TOKEN
     token = load_token()
     if not token:
-        logger.critical("💥 Нет доступного WA токена ни в Supabase, ни в ENV")
+        logger.critical("💥 Нет доступного WA токена ни в Postgres, ни в ENV")
         _WHATSAPP_TOKEN = ""
         return
 
@@ -37,19 +37,19 @@ def init_token() -> None:
         _WHATSAPP_TOKEN = token
         logger.info(f"🔍 WA токен валиден: {token[:8]}..., len={len(token)}")
     else:
-        logger.warning("⚠️ Supabase токен недействителен")
+        logger.warning("⚠️ Токен из БД недействителен")
         env_token = os.getenv("WHATSAPP_TOKEN", "")
         if env_token and check_token_validity_raw(env_token):
             _WHATSAPP_TOKEN = env_token
             logger.info("🔑 Переключились на WA токен из ENV (валидный)")
             try:
-                save_token_to_supabase(env_token)
-                logger.info("☁️ ENV-токен сохранён в Supabase")
+                persist_token_to_pg(env_token)
+                logger.info("☁️ ENV-токен сохранён в Postgres")
             except Exception as e:
                 logger.warning(f"⚠️ Не удалось сохранить ENV-токен в Supabase: {e}")
         else:
             _WHATSAPP_TOKEN = ""
-            logger.critical("💥 Нет валидного WA токена ни в Supabase, ни в ENV")
+            logger.critical("💥 Нет валидного WA токена ни в Postgres, ни в ENV")
 
 def get_token() -> str:
     """Дай актуальный токен (ленивая инициализация)."""
@@ -64,8 +64,8 @@ def set_token(new_token: str) -> None:
     _WHATSAPP_TOKEN = new_token
 
 def save_token(new_token: str) -> bool:
-    """Сохранить в Supabase и обновить в памяти (для прода)."""
-    ok = save_token_to_supabase(new_token)
+    """Сохранить в Postgres и обновить в памяти (для прода)."""
+    ok = persist_token_to_pg(new_token)
     if ok:
         set_token(new_token)
     return ok

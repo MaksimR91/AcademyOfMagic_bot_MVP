@@ -5,7 +5,6 @@ import os, logging
 CRITICAL_VARS = [
     "VERIFY_TOKEN", "PHONE_NUMBER_ID",
     "META_APP_ID", "META_APP_SECRET",
-    "SUPABASE_URL", "SUPABASE_API_KEY",
 ]
 
 WARNING_VARS = [

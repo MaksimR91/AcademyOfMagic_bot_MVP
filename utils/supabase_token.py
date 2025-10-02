@@ -1,100 +1,102 @@
 from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
-import os, time, requests, threading
+import os, time
 from logger import logger
 from utils.env_flags import is_local_dev
+from sqlalchemy import create_engine, text
 
-SUPABASE_URL        = os.getenv("SUPABASE_URL")
-SUPABASE_API_KEY    = os.getenv("SUPABASE_API_KEY")
-SUPABASE_TABLE_NAME = "tokens"
 ENV_FALLBACK_TOKEN  = os.getenv("WHATSAPP_TOKEN")
 LOCAL_DEV = is_local_dev()
 
+# ✅ источники для Postgres (Neon/др.)
+# Приоритет: PG_POOLED_URL → NEON_DATABASE_URL → PG_DIRECT_URL
+PG_POOLED_URL      = (os.getenv("PG_POOLED_URL") or "").strip()
+NEON_DATABASE_URL  = (os.getenv("NEON_DATABASE_URL") or "").strip()
+PG_DIRECT_URL      = (os.getenv("PG_DIRECT_URL") or "").strip()
+PG_URL = PG_POOLED_URL or NEON_DATABASE_URL or PG_DIRECT_URL
 
-HEADERS = {
-     "apikey": SUPABASE_API_KEY,
-     "Authorization": f"Bearer {SUPABASE_API_KEY}",
-     "Content-Type": "application/json",
- }
+def _mk_engine(url: str):
+    """Единый фабричный метод движка с безопасными опциями."""
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_recycle=60,
+        pool_size=3, max_overflow=3,
+        connect_args={"connect_timeout": 5}
+    )
 
-def load_token_from_supabase(retries: int = 3, delay_sec: int = 3) -> str | None:
+def _load_token_from_postgres() -> str | None:
+    """
+    Основной путь: читаем последний токен из таблицы public.tokens в Postgres (Neon/PG).
+    """
     if LOCAL_DEV:
-        logger.info("LOCAL_DEV=1: skip Supabase load")
+        logger.info("[token] LOCAL_DEV=1: пропускаю Postgres load")
         return None
-    if not SUPABASE_URL or not SUPABASE_API_KEY:
-        logger.error("Supabase env missing: SUPABASE_URL or SUPABASE_API_KEY")
+    if not PG_URL:
+        logger.info("[token] PG_URL не задан → пропускаю Postgres load")
         return None
-    url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}?select=token&order=updated_at.desc&limit=1"
-    last_err = None
-    for attempt in range(1, retries + 1):
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            if not data:
-                logger.warning("No token rows in Supabase")
+    try:
+        eng = _mk_engine(PG_URL)
+        with eng.connect() as conn:
+            # Берём самую свежую запись по updated_at
+            row = conn.execute(
+                text("select token from public.tokens order by updated_at desc limit 1")
+            ).first()
+            if not row:
+                logger.warning("[token] В Postgres таблица tokens пустая")
                 return None
-            return data[0]["token"]
-        except Exception as e:
-            last_err = e
-            logger.warning(f"[supabase] load_token attempt {attempt}/{retries} failed: {e}")
-            time.sleep(delay_sec)
-    logger.error(f"[supabase] all load attempts failed: {last_err}")
+            token = row[0]
+            if token:
+                logger.info("🔑 Токен загружен из Postgres")
+                return token
+            logger.warning("[token] В Postgres последняя строка без токена")
+    except Exception as e:
+        logger.error(f"[token] Ошибка чтения из Postgres: {e}")
     return None
-
 
 def load_token() -> str | None:
     """
     Универсальная загрузка токена:
-    1. Пробуем Supabase
-    2. Если нет или ошибка — используем ENV (WA_ACCESS_TOKEN)
+    1) Пробуем Postgres (Neon/PG_URL)
+    2) Если нет или ошибка — используем ENV (WHATSAPP_TOKEN)
     """
-    token = load_token_from_supabase()
+    token = _load_token_from_postgres()
     if token:
-        logger.info("🔑 Токен загружен из Supabase")
+        logger.info("🔑 Токен загружен из Postgres")
         return token
     if ENV_FALLBACK_TOKEN:
         logger.warning("⚠️ Используем fallback токен из ENV (WA_ACCESS_TOKEN)")
         return ENV_FALLBACK_TOKEN
-    logger.error("❌ Нет доступного токена ни в Supabase, ни в ENV")
+    logger.error("❌ Нет доступного токена ни в Postgres, ни в ENV")
     return None
 
-def save_token_to_supabase(token: str) -> bool:
+def _save_token_to_postgres(token: str) -> bool:
+    """
+    Сохраняем токен в Postgres (вставляем новую строку).
+    Таблица public.tokens с колонками (id, token, created_at, updated_at) как обсуждали.
+    """
     if LOCAL_DEV:
-        logger.info("[supabase] LOCAL_DEV=1: save_token пропущен")
+        logger.info("[token] LOCAL_DEV=1: save_token_to_postgres пропущен")
         return True
-    if not SUPABASE_URL or not SUPABASE_API_KEY:
-        logger.error("[supabase] save_token: missing SUPABASE_URL/API_KEY")
+    if not PG_URL:
+        logger.info("[token] PG_URL не задан → пропускаю Postgres save")
         return False
-    url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}"
-    payload = {"token": token}
-    # Можно добавить Prefer, но и так ок:
-    r = requests.post(url, json=payload, headers=HEADERS, timeout=10)
-    if r.status_code not in (200, 201):
-        logger.error(f"[supabase] save_token failed: {r.status_code} {r.text}")
-        return False
-    return True
-
-def ping_supabase():
-    """
-    Лёгкий GET, чтобы проект не уснул.
-    Берём минимальный селект из таблицы tokens.
-    """
-    if LOCAL_DEV or (not SUPABASE_URL or not SUPABASE_API_KEY):
-        return
     try:
-        url = f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE_NAME}?select=id&limit=1"
-        r = requests.get(url, headers=HEADERS, timeout=8)
-        logger.info(f"[supabase_ping] status={r.status_code}")
+        eng = _mk_engine(PG_URL)
+        with eng.begin() as conn:
+            conn.execute(
+                text("insert into public.tokens (token) values (:t)"),
+                {"t": token},
+            )
+        logger.info("💾 Токен сохранён в Postgres")
+        return True
     except Exception as e:
-        logger.warning(f"[supabase_ping] fail: {e}")
+        logger.error(f"[token] Ошибка сохранения в Postgres: {e}")
+        return False
 
-def start_supabase_ping_loop(interval_hours: int = 12):
-    def loop():
-        while True:
-            try:
-                ping_supabase()
-            except Exception as e:
-                logger.warning(f"⚠️ Supabase ping error: {e}")
-            time.sleep(interval_hours * 3600)
-    threading.Thread(target=loop, daemon=True).start()
+def save_token(token: str) -> bool:
+    """
+    Единая точка сохранения: пишем в Postgres (Neon/PG_URL)
+    """
+    ok_pg = _save_token_to_postgres(token)
+    return bool(ok_pg)
