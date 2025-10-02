@@ -34,6 +34,7 @@ try:
 except Exception:
     ACCEL = 1.0
 log.info(f"⚑ flags: TEST_MODE={TEST_MODE}, LOCAL_DEV={LOCAL_DEV}, REMINDER_ACCEL={ACCEL}")
+AUTOSTART = os.getenv("REMINDER_AUTOSTART", "1").lower() in {"1","true","yes"}
 
 def _safe_dsn(dsn: str) -> str:
     """Для логов: скрываем пароль, оставляем хост/БД."""
@@ -127,6 +128,14 @@ def start():
     except Exception as e:
         log.exception(f"💥 APScheduler start error: {e}")
         start._started = False
+
+
+# автозапуск по умолчанию, чтобы не забыть вызвать start() в app.py
+if AUTOSTART:
+    try:
+        start()
+    except Exception as _e:
+        log.exception("💥 reminder_engine autostart failed: %s", _e)
 
 # ---------- универсальный планировщик ---------------------------
 #  accepted func_path formats

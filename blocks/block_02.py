@@ -274,7 +274,10 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
         return
     if st.get("stage") != "block2":
         logger.info("[block02:R1] skip: stage=%s != block2", st.get("stage"))
-        return  # Клиент уже ответил или сменился блок — ничего не делаем
+        return
+    if st.get("cancel_block2_reminders"):
+        logger.info("[block02:R1] skip: cancel_block2_reminders=True")
+        return
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
@@ -305,7 +308,7 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     # Подготовка таймера на второе напоминание через 12 часов (в блок 2.2)
     plan(user_id, "blocks.block_02:send_second_reminder_if_silent", DELAY_TO_BLOCK_2_2_HOURS * 3600)
     state.update_state(user_id, {"r1_scheduled_b2": True})
-    
+    logger.info("[block02:R1] sent & scheduled R2")
 
 def send_second_reminder_if_silent(user_id, send_reply_func):
     state = _state()
@@ -315,7 +318,10 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
         return
     if st.get("stage") != "block2":
         logger.info("[block02:R2] skip: stage=%s != block2", st.get("stage"))
-        return  # Клиент уже ответил — ничего не делаем
+        return  
+    if st.get("cancel_block2_reminders"):
+        logger.info("[block02:R2] skip: cancel_block2_reminders=True")
+        return
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
@@ -344,13 +350,17 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     })
     plan(user_id, "blocks.block_02:finalize_if_still_silent", FINAL_TIMEOUT_HOURS * 3600)
     state.update_state(user_id, {"r2_scheduled_b2": True})
+    logger.info("[block02:R2] sent & scheduled FINAL")
 
 # Финальный таймер — если клиент не ответит ещё 4 часа, уходим в block5
 def finalize_if_still_silent(user_id, send_reply_func):
     state = _state()
     st2 = state.get_state(user_id)
     if not st2 or st2.get("stage") != "block2":
-        return  # Ответил — всё ок
+        return 
+    if st2.get("cancel_block2_reminders"):
+        logger.info("[block02:FIN] skip: cancel_block2_reminders=True")
+        return
     # идемпотентность финала
     if st2.get("fin_scheduled_b2_done"):
         return
@@ -364,4 +374,5 @@ def finalize_if_still_silent(user_id, send_reply_func):
         "scenario_stage_at_handover": "block2",
         "fin_scheduled_b2_done": True    })
     from router import route_message
+    logger.info("[block02:FIN] handover → block5 (no responses after R2)")
     route_message("", user_id, force_stage="block5")
