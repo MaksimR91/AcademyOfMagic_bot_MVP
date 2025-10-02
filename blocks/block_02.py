@@ -50,7 +50,8 @@ def _rule_based_label(text: str) -> str | None:
     Позитивные шорткаты: если явно распознали — сразу возвращаем метку.
     Иначе None → дальше решает ИИ.
     """
-    msg = text.lower()
+     # casefold — надёжнее, чем lower, для кириллицы и смешанных символов
+    msg = (text or "").casefold()
     # 1) Детсад → детское
     if any(k in msg for k in [
         "детсад", "детсаду", "в детсаду",
@@ -58,8 +59,8 @@ def _rule_based_label(text: str) -> str | None:
         "выпускной в саду"
     ]):
         return "детское"
-    # 2) Свадьба/жених/невест- → взрослое (учитываем словоформы)
-    if any(k in msg for k in ["свадьб", "жених", "невест"]):
+    # 2) Свадьба/жених/невест- → взрослое (учитываем словоформы + явное слово)
+    if any(k in msg for k in ["свадьба", "свадьб", "жених", "невест", "роспись", "бракосочетан", "загс", "регистрация брака"]):
         return "взрослое"
     # 3) Явно семейные маркеры
     if any(k in msg for k in ["семейн", "крещени"]):
@@ -184,7 +185,8 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "last_sender": "user",
             "last_message_ts": time.time(),
             "last_user_ts": time.time(),
-            "cancel_block2_reminders": False
+            # клиент ответил — не открываем повторки вручную, повторки управляются по ts
+            "cancel_block2_reminders": True
         })
         count = st.get("uninformative_replies", 0) + 1
 
@@ -218,7 +220,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             "uninformative_replies": count,
             "last_sender": "bot",
             "last_message_ts": time.time(),
-            "cancel_block2_reminders": False
+            "cancel_block2_reminders": True
         })
 
         # R1 ставим только если ещё не ставили ранее
@@ -261,9 +263,6 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
 def send_first_reminder_if_silent(user_id, send_reply_func):
     state = _state()
     st = state.get_state(user_id)
-    # Глобальный рубильник
-    if st and st.get("cancel_block2_reminders"):
-        return
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил или сменился блок — ничего не делаем
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
@@ -299,8 +298,6 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
 def send_second_reminder_if_silent(user_id, send_reply_func):
     state = _state()
     st = state.get_state(user_id)
-    if st and st.get("cancel_block2_reminders"):
-        return
     if not st or st.get("stage") != "block2":
         return  # Клиент уже ответил — ничего не делаем
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
@@ -334,8 +331,6 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
 def finalize_if_still_silent(user_id, send_reply_func):
     state = _state()
     st2 = state.get_state(user_id)
-    if st2 and st2.get("cancel_block2_reminders"):
-        return
     if not st2 or st2.get("stage") != "block2":
         return  # Ответил — всё ок
     # идемпотентность финала
