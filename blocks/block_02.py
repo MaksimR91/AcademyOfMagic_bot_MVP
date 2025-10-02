@@ -77,7 +77,8 @@ def _rule_based_label(text: str) -> str | None:
 def handle_block2(message_text, user_id, send_reply_func):
 
     state = _state()
-    state_dict = state.get_state(user_id)
+    # важно: get_state может вернуть None
+    state_dict = state.get_state(user_id) or {}
     # если уже отправляли стартовое сообщение — не дублируем
     if state_dict.get("stage") == "block2" and state_dict.get("block2_intro_sent"):
         return
@@ -100,7 +101,12 @@ def handle_block2(message_text, user_id, send_reply_func):
         "stage": "block2",
         "block2_intro_sent": True,
         "last_sender": "bot",
-        "last_message_ts": time.time()
+        "last_message_ts": time.time(),
+        # сбрасываем флаги отправленных повторок на новый цикл
+        "r1_sent_b2": False,
+        "r2_sent_b2": False,
+        # и на всякий случай финальный флаг
+        "fin_scheduled_b2_done": False
     })
 
     plan(user_id,
@@ -263,15 +269,21 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
 def send_first_reminder_if_silent(user_id, send_reply_func):
     state = _state()
     st = state.get_state(user_id)
-    if not st or st.get("stage") != "block2":
+    if not st:
+        logger.info("[block02:R1] skip: no state")
+        return
+    if st.get("stage") != "block2":
+        logger.info("[block02:R1] skip: stage=%s != block2", st.get("stage"))
         return  # Клиент уже ответил или сменился блок — ничего не делаем
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
     if last_user_ts > last_bot_ts:
+        logger.info("[block02:R1] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
         return
     # идемпотентность: если уже ОТПРАВЛЯЛИ R1 — выходим
     if st.get("r1_sent_b2"):
+        logger.info("[block02:R1] skip: r1_sent_b2 already True")
         return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
@@ -298,15 +310,21 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
 def send_second_reminder_if_silent(user_id, send_reply_func):
     state = _state()
     st = state.get_state(user_id)
-    if not st or st.get("stage") != "block2":
+    if not st:
+        logger.info("[block02:R2] skip: no state")
+        return
+    if st.get("stage") != "block2":
+        logger.info("[block02:R2] skip: stage=%s != block2", st.get("stage"))
         return  # Клиент уже ответил — ничего не делаем
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
     if last_user_ts > last_bot_ts:
+        logger.info("[block02:R2] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
         return
     # идемпотентность: если уже ОТПРАВЛЯЛИ R2 — выходим
     if st.get("r2_sent_b2"):
+        logger.info("[block02:R2] skip: r2_sent_b2 already True")
         return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
