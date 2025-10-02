@@ -4,10 +4,17 @@ import os, time, logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.jobstores.memory import MemoryJobStore
+from sqlalchemy import create_engine
 from datetime import datetime, timezone
 from state.state import get_state
 from utils.whatsapp_senders import send_text          # тот же dict‑API
 from utils.env_flags import is_local_dev
+
+# опционально (если дадим REDIS_URL — будет самый надёжный стор)
+try:
+    from apscheduler.jobstores.redis import RedisJobStore  # type: ignore
+except Exception:  # Redis не обязателен
+    RedisJobStore = None  # type: ignore
 
 if not logging.getLogger().handlers:
     h = logging.StreamHandler()          # stdout → Render console
@@ -28,37 +35,79 @@ except Exception:
     ACCEL = 1.0
 log.info(f"⚑ flags: TEST_MODE={TEST_MODE}, LOCAL_DEV={LOCAL_DEV}, REMINDER_ACCEL={ACCEL}")
 
-# ---------- JobStore выбор ----------
+def _safe_dsn(dsn: str) -> str:
+    """Для логов: скрываем пароль, оставляем хост/БД."""
+    try:
+        tail = dsn.split("@", 1)[-1]
+        return tail.split("?", 1)[0]
+    except Exception:
+        return "<dsn>"
+
+
+def _mk_engine(url: str):
+    """Единый фабричный метод движка с безопасными опциями."""
+    return create_engine(
+        url,
+        pool_pre_ping=True,                 # отваливающиеся коннекты чинит прозрачно
+        pool_recycle=60,                    # ребалансируем соединения почаще
+        pool_size=5, max_overflow=5,
+        connect_args={"connect_timeout": 5} # не висим навсегда
+    )
+
 def _build_jobstores():
     """
-    LOCAL_DEV=1 или ACADEMYBOT_TEST=1 → MemoryJobStore.
-    PROD (оба 0) → Postgres (Supabase). При ошибке — фоллбек в память.
+    Порядок:
+      1) LOCAL_DEV/TEST → Memory
+      2) REDIS_URL → RedisJobStore
+      3) PG_POOLED_URL → SQLAlchemyJobStore (PgBouncer/pooled)
+      4) NEON_DATABASE_URL (или PG_DIRECT_URL) → SQLAlchemyJobStore (прямой Postgres)
+      5) fallback → Memory
     """
+    # 1) локальный/тестовый стенд → сразу память
     if LOCAL_DEV or TEST_MODE:
         log.info("🧠 Jobstore = Memory (LOCAL_DEV/TEST_MODE)")
         return {"default": MemoryJobStore()}
-    try:
-        # PROD: берём DSN из SUPABASE_DB_URL; если нет — собираем из SUPABASE_URL
-        pg_url = os.getenv("SUPABASE_DB_URL")
-        if not pg_url:
-            raw_supabase = os.getenv("SUPABASE_URL")
-            if not raw_supabase:
-                raise RuntimeError("neither SUPABASE_DB_URL nor SUPABASE_URL set")
-            pg_url = (
-                raw_supabase
-                .replace("https://", "postgresql+psycopg2://")
-                .replace(".supabase.co", ".supabase.co/postgres")
-            )
-        log.info(f"🔗 reminder_engine PG url → {pg_url.split('@')[-1].split('?')[0]}")
-        return {
-            "default": SQLAlchemyJobStore(
-                url=pg_url,
-                engine_options={"connect_args": {"connect_timeout": 5}},
-            )
-        }
-    except Exception as e:
-        log.warning(f"⚠️ Postgres недоступен → MemoryJobStore: {e}")
-        return {"default": MemoryJobStore()}
+
+    # 2) Redis (самый стабильный стор для задач, если есть URL)
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if RedisJobStore and redis_url:
+        try:
+            js = RedisJobStore(url=redis_url, jobs_key="aps:jobs", run_times_key="aps:runs")  # type: ignore
+            log.info("🔗 reminder_engine REDIS url → %s", redis_url.split("@")[-1])
+            return {"default": js}
+        except Exception as e:
+            log.error("💥 RedisJobStore init failed: %s", e, exc_info=True)
+
+    # 3) Пулер (PgBouncer): используем PG_POOLED_URL
+    pooled = os.getenv("PG_POOLED_URL", "").strip()
+    if pooled:
+        try:
+            eng = _mk_engine(pooled)
+            with eng.connect() as _:
+                pass  # быстрая проверка коннекта
+            log.info("🔗 reminder_engine PG (pooler) → %s", _safe_dsn(pooled))
+            return {"default": SQLAlchemyJobStore(engine=eng)}
+        except Exception as e:
+            log.error("💥 PG pooler unreachable: %s", e, exc_info=True)
+
+    # 4) Прямой Postgres (минует PgBouncer): сначала NEON_DATABASE_URL, затем PG_DIRECT_URL
+    direct = (
+        os.getenv("NEON_DATABASE_URL", "").strip()
+        or os.getenv("PG_DIRECT_URL", "").strip()
+    )
+    if direct:
+        try:
+            eng = _mk_engine(direct)
+            with eng.connect() as _:
+                pass
+            log.info("🔗 reminder_engine PG (direct) → %s", _safe_dsn(direct))
+            return {"default": SQLAlchemyJobStore(engine=eng)}
+        except Exception as e:
+            log.error("💥 PG direct unreachable: %s", e, exc_info=True)
+
+    # 5) fallback
+    log.warning("⚠️ No stable DB for jobstore → MemoryJobStore fallback")
+    return {"default": MemoryJobStore()}
 
 # ---------- APScheduler старт ----------
 jobstores = _build_jobstores()
@@ -73,7 +122,8 @@ def start():
     try:
         sched.start()
         start._started = True
-        log.info("⏰ reminder_engine started with %s jobstore", next(iter(jobstores)))
+        js_name = type(sched._jobstores["default"]).__name__ if "default" in sched._jobstores else "<unknown>"
+        log.info("⏰ reminder_engine started with %s jobstore", js_name)
     except Exception as e:
         log.exception(f"💥 APScheduler start error: {e}")
         start._started = False
