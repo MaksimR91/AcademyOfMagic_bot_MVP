@@ -3,7 +3,7 @@ from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
 import os, time, threading, requests
 from logger import logger
-from utils.supabase_token import save_token as persist_token_to_pg, load_token
+from utils.neon_token import save_token as persist_token_to_pg, load_token
 from utils.env_flags import is_local_dev
 
 LOCAL_DEV = is_local_dev()
@@ -46,7 +46,7 @@ def init_token() -> None:
                 persist_token_to_pg(env_token)
                 logger.info("☁️ ENV-токен сохранён в Postgres")
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось сохранить ENV-токен в Supabase: {e}")
+                logger.warning(f"⚠️ Не удалось сохранить ENV-токен в Postgres: {e}")
         else:
             _WHATSAPP_TOKEN = ""
             logger.critical("💥 Нет валидного WA токена ни в Postgres, ни в ENV")

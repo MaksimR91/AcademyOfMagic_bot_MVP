@@ -25,7 +25,7 @@ def update_token():
             if LOCAL_DEV:
                 set_token(token)  # только в памяти
             else:
-                save_token(token)  # Supabase + память
+                save_token(token)  # Postgres + память
         message = "✅ Токен успешно сохранён!"
 
     return render_template("token.html", message=message)

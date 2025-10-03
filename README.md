@@ -147,7 +147,7 @@ pytest -q -k "webhook or reminders" -s
            s3_upload.py - загрузка фото именинника в Яндекс Cloud S3;
            schedule.py - работа с расписанием в Яндекс Cloud S3;
            structured.py - формирование шаблона информации о заявке для передачи Арсению и в CRM;
-           supabase_token.py - работа с Supabase: загрузка, сохранение токена WhatsApp, пинг Supabase;
+           neon_token.py - работа с Neon: загрузка, сохранение токена WhatsApp;
            telegram_alert.py - отправка уведомления в Telegram об истечении срока годности токена WhatsApp;
            token_manager.py - менеджер токенов WhatsApp (следит за наличием и актуальностью токена);
            upload_materials_to_meta_and_update_registry.py - синхронизация материалов о выступлении между Meta и Яндекс Cloud S3;
@@ -223,7 +223,7 @@ Bot_MVP/
     s3_upload.py
     schedule.py
     structured.py
-    supabase_token.py
+    neon_token.py
     telegram_alert.py
     token_manager.py
     upload_materials_to_meta_and_update_registry.py

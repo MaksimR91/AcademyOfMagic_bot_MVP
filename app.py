@@ -28,17 +28,12 @@ from utils.token_manager import init_token, get_token, set_token, save_token, st
 from utils.telegram_alert import notify_if_token_invalid
 from utils.outgoing_message import send_text_message
 from utils.incoming_message import handle_message, handle_status
-from utils.supabase_token import start_supabase_ping_loop
 from utils.cleanup import cleanup_temp_files, start_memory_cleanup_loop, log_memory_usage
 from utils.env_flags import is_local_dev
 from utils import reminder_engine  # ⬅ импортируем модуль, чтобы иметь start()
 
 logger.info("💬 logger test — должен появиться в консоли Render")
 
-# Supabase config
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
-SUPABASE_TABLE_NAME = "tokens"
 # приводим к булю: "1", "true", "yes" → True
 LOCAL_DEV = is_local_dev()
 # флаг «запустить фоновые задачи один раз»
@@ -82,7 +77,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 client = OpenAI(api_key=openai_api_key)
 logger.info(f"🔐 OpenAI API key начинается на: {openai_api_key[:5]}..., длина: {len(openai_api_key)}")
 
-init_token()  # учтёт LOCAL_DEV и/или Supabase
+init_token()  # учтёт LOCAL_DEV
 
 # ─────────────────────────────────────────────────────────────
 def _bootstrap_background():
@@ -117,15 +112,6 @@ def _bootstrap_background():
         start_media_upload_loop()
     except Exception as e:
         logger.warning(f"⚠️ Не удалось запустить media_upload_loop: {e}")
-
-    # Пинг Supabase (если не локал)
-    if not LOCAL_DEV:
-        try:
-            start_supabase_ping_loop()
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось запустить supabase_ping_loop: {e}")
-    else:
-        logger.info("🟡 LOCAL_DEV=1: Supabase ping loop отключён")
 
     # Разовая очистка и фоновый контроль памяти
     try:
