@@ -25,6 +25,7 @@ AVAILABILITY_PROMPT_PATH = "prompts/block03_availability_prompt.txt"
 DELAY_TO_BLOCK_3_1_HOURS = 4
 DELAY_TO_BLOCK_3_2_HOURS = 12
 FINAL_TIMEOUT_HOURS      = 4
+_EPSILON_SEC = 1.0  # допуск на джиттер таймера/сетевые задержки
 
 # ——— УНИФИЦИРОВАННЫЕ КОНСТАНТЫ, КАК В 3C ———
 SAFE_KEYS = {
@@ -346,7 +347,7 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
 
 Ранее от клиента: {prev_info}
 
-Сегодня: {client_request_date}
+Сегодня: {client_request_date_str}
 
 Сообщение клиента: "{message_text}"
 
@@ -355,10 +356,13 @@ def handle_block3a(message_text, user_id, send_reply_func, client_request_date=N
 
 Ответ — только список вопросов, без повторений и без summary.
 """
-        text_to_client = ask_openai(prompt).strip()
+        text_to_client = (ask_openai(prompt) or "").strip()
         logger.info("text_to_client %s", text_to_client)
 
-        send_reply_func(text_to_client)
+        if text_to_client:
+            send_reply_func(text_to_client)
+        else:
+            logger.warning("[block3a] пустой список вопросов — отправка подавлена")
         now_ts = time.time()
         update_state(user_id, {
             "stage": "block3a",
@@ -487,7 +491,9 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     last_user_ts = float(state.get("last_user_ts") or 0)
     now_ts = time.time()
     # если с момента последнего бот-сообщения прошло меньше ЭФФЕКТИВНОЙ задержки — это «старый» таймер
-    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_3_1_HOURS):
+    if now_ts - last_bot_ts < (_eff_delay_sec(DELAY_TO_BLOCK_3_1_HOURS) - _EPSILON_SEC):
+        logger.info("[block3a:R1] skipped as too-early: dt=%.3fs < thr=%.3fs",
+                    now_ts - last_bot_ts, _eff_delay_sec(DELAY_TO_BLOCK_3_1_HOURS))
         return
     if last_user_ts > last_bot_ts:
         return
@@ -500,8 +506,11 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     last_q = state.get("last_bot_question", "")
     full_prompt = global_prompt + "\n\n" + reminder_prompt + f'\n\nПоследний вопрос бота: "{last_q}"'
 
-    reply = ask_openai(full_prompt)
-    send_reply_func(reply)
+    reply = (ask_openai(full_prompt) or "").strip()
+    if reply:
+        send_reply_func(reply)
+    else:
+        logger.warning("[block3a:R1] empty reminder text — suppressed")
 
     now_ts = time.time()
     update_state(user_id, {
@@ -523,7 +532,9 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     last_bot_ts = float(state.get("last_bot_ts") or 0)
     last_user_ts = float(state.get("last_user_ts") or 0)
     now_ts = time.time()
-    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_3_2_HOURS):
+    if now_ts - last_bot_ts < (_eff_delay_sec(DELAY_TO_BLOCK_3_2_HOURS) - _EPSILON_SEC):
+        logger.info("[block3a:R2] skipped as too-early: dt=%.3fs < thr=%.3fs",
+                    now_ts - last_bot_ts, _eff_delay_sec(DELAY_TO_BLOCK_3_2_HOURS))
         return
     if last_user_ts > last_bot_ts:
         return
@@ -535,9 +546,12 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     last_q = state.get("last_bot_question", "")
     full_prompt = global_prompt + "\n\n" + reminder_prompt + f'\n\nПоследний вопрос бота: "{last_q}"'
 
-    reply = ask_openai(full_prompt)
-    send_reply_func(reply)
-
+    reply = (ask_openai(full_prompt) or "").strip()
+    if reply:
+        send_reply_func(reply)
+    else:
+        logger.warning("[block3a:R2] empty reminder text — suppressed")
+        
     now_ts = time.time()
     update_state(user_id, {
         "stage": "block3a",
