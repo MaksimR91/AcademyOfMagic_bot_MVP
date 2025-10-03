@@ -295,7 +295,7 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
 
 Ранее от клиента: {prev_info}
 
-Сегодня: {client_request_date}
+Сегодня: {client_request_date_str}
 
 Сообщение клиента: "{message_text}"
 
@@ -308,6 +308,12 @@ def handle_block3b(message_text, user_id, send_reply_func, client_request_date=N
 """
         text_to_client = ask_openai(prompt).strip()
         logger.info("text_to_client %s", text_to_client)
+        # 👉 отправляем клиенту вопросы (раньше просто логировалось)
+        if text_to_client:
+            try:
+                send_reply_func(text_to_client)
+            except Exception as e:
+                logger.warning(f"[block3b] failed to send clarifying questions: {e}")
 
         now_ts = time.time()
         update_state(user_id, {
