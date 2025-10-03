@@ -6,6 +6,7 @@ from state.state import update_state
 from logger import logger
 from importlib import import_module
 import os
+from utils.reminder_engine import sched  # для отмены джобов
 
 # Пути к промптам
 GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
@@ -17,6 +18,25 @@ CLASSIF_PROMPT_PATH = "prompts/block02_classification_prompt.txt"
 DELAY_TO_BLOCK_2_1_HOURS = 4
 DELAY_TO_BLOCK_2_2_HOURS = 12
 FINAL_TIMEOUT_HOURS = 4
+
+def _eff_delay_sec(hours: float) -> float:
+    """Учитываем REMINDER_ACCEL, как в 3a."""
+    try:
+        accel = float(os.getenv("REMINDER_ACCEL", "1.0"))
+    except Exception:
+        accel = 1.0
+    return hours * 3600.0 * accel
+
+def _cancel_block2_jobs(user_id: str):
+    """Снимаем все отложенные задачи по block_02 для этого пользователя."""
+    try:
+        for job in sched.get_jobs():
+            # у вас в #reset снимаются все user-джобы по префиксу f"{user_id}:"
+            # здесь достаточно быть безопасными и снять всё по пользователю
+            if job.id.startswith(f"{user_id}:"):
+                sched.remove_job(job.id)
+    except Exception as e:
+        logger.warning(f"[block02] cancel jobs failed: {e}")
 
 def load_prompt(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -130,6 +150,16 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         "last_user_ts": now_ts,
         "cancel_block2_reminders": True
     })
+    # критично: снимаем уже запланированные джобы, чтобы они не «стреляли» позже
+    _cancel_block2_jobs(user_id)
+    # и сразу сбрасываем внутренние флаги расписания/отправок на всякий случай
+    state.update_state(user_id, {
+        "r1_sent_b2": False,
+        "r2_sent_b2": False,
+        "r1_scheduled_b2": False,
+        "r2_scheduled_b2": False,
+        "fin_scheduled_b2_done": False
+    })
     # 🔁 Хендовер по явной просьбе клиента (теперь проверяем здесь, а не в handle_block2)
     if wants_handover_ai(message_text):
         update_state(user_id, {
@@ -159,7 +189,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         else:
             next_block = "block3d"
         from router import route_message
-        # В тестах фейковый роутер не меняет stage — зафиксируем сами
+        # Зафиксируем stage до роутинга, чтобы следующие хендлеры не терялись
         state.update_state(user_id, {"stage": next_block})
         return route_message(message_text, user_id, force_stage=next_block)
 
@@ -194,7 +224,9 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
             # клиент ответил — не открываем повторки вручную, повторки управляются по ts
             "cancel_block2_reminders": True
         })
-        count = st.get("uninformative_replies", 0) + 1
+        # пересчитаем по актуальному состоянию, а не по старому снапшоту st
+        curr = state.get_state(user_id) or {}
+        count = int(curr.get("uninformative_replies", 0)) + 1
 
         if count > 2:
             state.update_state(user_id, {
@@ -261,8 +293,13 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         next_block = "block5"  # fallback на всякий случай
 
     from router import route_message
-    # ЯВНО фиксируем сцену перед маршрутизацией (как и в rule-based ветке)
-    state.update_state(user_id, {"stage": next_block})
+    # ЯВНО фиксируем сцену и дополнительно «страхуемся» от старых таймеров
+    state.update_state(user_id, {
+        "stage": next_block,
+        "cancel_block2_reminders": True,
+        "r1_scheduled_b2": False,
+        "r2_scheduled_b2": False
+    })
     return route_message(message_text, user_id, force_stage=next_block)
 
 
@@ -281,6 +318,11 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
+    now_ts = time.time()
+    # защита от «ранних» таймеров (учитываем REMINDER_ACCEL)
+    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_2_1_HOURS):
+        logger.info("[block02:R1] skip: too early (dt=%.0fs)", now_ts - last_bot_ts)
+        return
     if last_user_ts > last_bot_ts:
         logger.info("[block02:R1] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
         return
@@ -325,6 +367,10 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
     last_bot_ts = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
+    now_ts = time.time()
+    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_2_2_HOURS):
+        logger.info("[block02:R2] skip: too early (dt=%.0fs)", now_ts - last_bot_ts)
+        return
     if last_user_ts > last_bot_ts:
         logger.info("[block02:R2] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
         return
@@ -367,6 +413,11 @@ def finalize_if_still_silent(user_id, send_reply_func):
     # если клиент ответил после последнего бот-сообщения — не хендоверим
     last_bot_ts = float(st2.get("last_bot_ts") or 0)
     last_user_ts = float(st2.get("last_user_ts") or 0)
+    now_ts = time.time()
+    # защита от «раннего» финала
+    if now_ts - last_bot_ts < _eff_delay_sec(FINAL_TIMEOUT_HOURS):
+        logger.info("[block02:FIN] skip: too early (dt=%.0fs)", now_ts - last_bot_ts)
+        return
     if last_user_ts > last_bot_ts:
         return
     state.update_state(user_id, {

@@ -246,6 +246,9 @@ def _route_message_impl(
             if len(sig.parameters) >= 4:
                 args.append(time.time())  # client_request_date
             handler(*args)
+            # страховка: если пришли по force_stage, убедимся, что state.stage совпадает
+            if force_stage:
+                update_state(user_id, {"stage": stage})
     except Exception as e:
         logger.exception(f"💥 Ошибка в блоке {stage} для {user_id}: {e}")
         send_text_func("Произошла техническая ошибка, попробуйте позже.")
