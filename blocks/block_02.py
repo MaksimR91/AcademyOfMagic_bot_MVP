@@ -6,7 +6,7 @@ from state.state import update_state
 from logger import logger
 from importlib import import_module
 import os
-from utils.reminder_engine import sched  # для отмены джобов
+from utils.reminder_engine import plan, sched
 
 # Пути к промптам
 GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
@@ -27,12 +27,21 @@ def _eff_delay_sec(hours: float) -> float:
         accel = 1.0
     return hours * 3600.0 * accel
 
+JITTER_SEC = 2.0  # допуск на ранний вызов джобы (сеть/джиттер)
+
+def _replan_seconds(user_id: str, job_fn_qualname: str, seconds: float):
+    """Безопасно перепланировать ту же задачу через seconds."""
+    if seconds <= 0:
+        seconds = 1.0
+    try:
+        plan(user_id, job_fn_qualname, seconds)
+    except Exception as e:
+        logger.warning(f"[block02] replan fail {job_fn_qualname}: {e}")
+
 def _cancel_block2_jobs(user_id: str):
-    """Снимаем все отложенные задачи по block_02 для этого пользователя."""
+    """Снять все джобы этого пользователя (как в #reset), чтобы не «стреляли» позже."""
     try:
         for job in sched.get_jobs():
-            # у вас в #reset снимаются все user-джобы по префиксу f"{user_id}:"
-            # здесь достаточно быть безопасными и снять всё по пользователю
             if job.id.startswith(f"{user_id}:"):
                 sched.remove_job(job.id)
     except Exception as e:
@@ -150,14 +159,11 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         "last_user_ts": now_ts,
         "cancel_block2_reminders": True
     })
-    # критично: снимаем уже запланированные джобы, чтобы они не «стреляли» позже
+    # важно: убрать уже поставленные джобы, чтобы они не сработали позже
     _cancel_block2_jobs(user_id)
-    # и сразу сбрасываем внутренние флаги расписания/отправок на всякий случай
     state.update_state(user_id, {
-        "r1_sent_b2": False,
-        "r2_sent_b2": False,
-        "r1_scheduled_b2": False,
-        "r2_scheduled_b2": False,
+        "r1_sent_b2": False, "r2_sent_b2": False,
+        "r1_scheduled_b2": False, "r2_scheduled_b2": False,
         "fin_scheduled_b2_done": False
     })
     # 🔁 Хендовер по явной просьбе клиента (теперь проверяем здесь, а не в handle_block2)
@@ -316,12 +322,16 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
         logger.info("[block02:R1] skip: cancel_block2_reminders=True")
         return
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
-    last_bot_ts = float(st.get("last_bot_ts") or 0)
+    last_bot_ts  = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
-    now_ts = time.time()
-    # защита от «ранних» таймеров (учитываем REMINDER_ACCEL)
-    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_2_1_HOURS):
-        logger.info("[block02:R1] skip: too early (dt=%.0fs)", now_ts - last_bot_ts)
+    now_ts       = time.time()
+    eff_need     = _eff_delay_sec(DELAY_TO_BLOCK_2_1_HOURS)
+    dt           = now_ts - last_bot_ts
+    # если рано — перепланируем на остаток
+    if dt + JITTER_SEC < eff_need:
+        remaining = max(eff_need - dt, 1.0)
+        logger.info("[block02:R1] too early (dt=%.1fs). replan in %.1fs", dt, remaining)
+        _replan_seconds(user_id, "blocks.block_02:send_first_reminder_if_silent", remaining)
         return
     if last_user_ts > last_bot_ts:
         logger.info("[block02:R1] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
@@ -365,11 +375,15 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
         logger.info("[block02:R2] skip: cancel_block2_reminders=True")
         return
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
-    last_bot_ts = float(st.get("last_bot_ts") or 0)
+    last_bot_ts  = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
-    now_ts = time.time()
-    if now_ts - last_bot_ts < _eff_delay_sec(DELAY_TO_BLOCK_2_2_HOURS):
-        logger.info("[block02:R2] skip: too early (dt=%.0fs)", now_ts - last_bot_ts)
+    now_ts       = time.time()
+    eff_need     = _eff_delay_sec(DELAY_TO_BLOCK_2_2_HOURS)
+    dt           = now_ts - last_bot_ts
+    if dt + JITTER_SEC < eff_need:
+        remaining = max(eff_need - dt, 1.0)
+        logger.info("[block02:R2] too early (dt=%.1fs). replan in %.1fs", dt, remaining)
+        _replan_seconds(user_id, "blocks.block_02:send_second_reminder_if_silent", remaining)
         return
     if last_user_ts > last_bot_ts:
         logger.info("[block02:R2] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
@@ -411,12 +425,15 @@ def finalize_if_still_silent(user_id, send_reply_func):
     if st2.get("fin_scheduled_b2_done"):
         return
     # если клиент ответил после последнего бот-сообщения — не хендоверим
-    last_bot_ts = float(st2.get("last_bot_ts") or 0)
+    last_bot_ts  = float(st2.get("last_bot_ts") or 0)
     last_user_ts = float(st2.get("last_user_ts") or 0)
-    now_ts = time.time()
-    # защита от «раннего» финала
-    if now_ts - last_bot_ts < _eff_delay_sec(FINAL_TIMEOUT_HOURS):
-        logger.info("[block02:FIN] skip: too early (dt=%.0fs)", now_ts - last_bot_ts)
+    now_ts       = time.time()
+    eff_need     = _eff_delay_sec(FINAL_TIMEOUT_HOURS)
+    dt           = now_ts - last_bot_ts
+    if dt + JITTER_SEC < eff_need:
+        remaining = max(eff_need - dt, 1.0)
+        logger.info("[block02:FIN] too early (dt=%.1fs). replan in %.1fs", dt, remaining)
+        _replan_seconds(user_id, "blocks.block_02:finalize_if_still_silent", remaining)
         return
     if last_user_ts > last_bot_ts:
         return
