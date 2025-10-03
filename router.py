@@ -78,11 +78,19 @@ def _route_message_impl(
     · Готовим callables для WhatsApp
     · Дергаем нужный handler-блок
     """
-    # -------- подготовка функций отправки (нужны ПЕРЕД #reset) ------------
-    wa_to = (get_state(user_id) or {}).get("normalized_number", user_id)
-    send_text_func     = lambda body:     send_text(wa_to, body)
-    send_document_func = lambda media_id: send_document(wa_to, media_id)
-    send_video_func    = lambda media_id: send_video(wa_to, media_id)
+    # ⚠️ Номер не кэшируем — берём актуальный из state при каждом вызове
+    def _current_wa_to() -> str:
+        st = get_state(user_id) or {}
+        return st.get("normalized_number", user_id)
+
+    def send_text_func(body: str):
+        send_text(_current_wa_to(), body)
+
+    def send_document_func(media_id: str):
+        send_document(_current_wa_to(), media_id)
+
+    def send_video_func(media_id: str):
+        send_video(_current_wa_to(), media_id)
 
     # ---------- техническая команда "#reset" (только для админа) ----------
     if message_text.strip() == "#reset":
@@ -103,16 +111,16 @@ def _route_message_impl(
                 if job.id.startswith(f"{user_id}:"):
                     sched.remove_job(job.id)
 
-            send_text(wa_to, "State cleared.")
+            send_text(_current_wa_to(), "State cleared.")
         else:
             logger.warning("Ignored #reset from non-admin %s", user_id)
-            send_text(wa_to, "Команда недоступна.")
+            send_text(_current_wa_to(), "Команда недоступна.")
         return _response(user_id)
 
     elif message_text.strip() == "#jobs" and user_id in ADMIN_NUMBERS:
         from utils.reminder_engine import sched
         jobs = "\n".join(j.id for j in sched.get_jobs())
-        send_text(wa_to, jobs or "нет job-ов")
+        send_text(_current_wa_to(), jobs or "нет job-ов")
         return _response(user_id)
 
     # --------- идемпотентность и защита от «старых» входящих -------------
@@ -197,14 +205,14 @@ def _route_message_impl(
                     "stage": "block5",  # бывший block9
                 })
                 try:
-                    send_text(wa_to, "Передаю диалог Арсению. Спасибо!")
+                    send_text(_current_wa_to(), "Передаю диалог Арсению. Спасибо!")
                 except Exception:
                     pass
                 return _response(user_id)
             else:
                 # непонятный ответ — повторяем двуязычное сообщение один раз
                 try:
-                    send_text(wa_to, build_lang_switch_message(lang))
+                    send_text(_current_wa_to(), build_lang_switch_message(lang))
                 except Exception:
                     pass
                 return _response(user_id)
@@ -216,7 +224,7 @@ def _route_message_impl(
                     "lang_check_pending": True,
                     "detected_lang": lang,
                 })
-                send_text(wa_to, build_lang_switch_message(lang))
+                send_text(_current_wa_to(), build_lang_switch_message(lang))
                 return _response(user_id)
 
 

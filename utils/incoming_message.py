@@ -170,6 +170,11 @@ def process_text_message(text: str,
     from state.state import get_state, update_state, save_if_absent
     if not text:
         return
+    # гарантируем, что router возьмёт именно этот номер при отправке
+    try:
+        update_state(normalized_number, {"normalized_number": normalized_number})
+    except Exception:
+        pass
 
     st = get_state(normalized_number) or {}
 
