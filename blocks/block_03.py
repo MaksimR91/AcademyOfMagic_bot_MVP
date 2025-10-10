@@ -3,8 +3,12 @@ import os
 import re
 import time
 import json
+from typing import Optional, Any
 from importlib import import_module
 from logger import logger
+import dateparser
+from datetime import datetime
+import pytz
 from utils.ask_openai import ask_openai
 from utils.wants_handover_ai import wants_handover_ai
 from utils.reminder_engine import plan
@@ -68,6 +72,13 @@ SAFE_KEYS = {
     "event_date_iso", "event_time_24"
 }
 IGNORED_VALUES = {"", "не указано", "не указан", "неизвестно", "прочерк", "-", "n/a"}
+# ── доп. «пустые» значения для safe-upsert -----------------------------------
+SENTINELS = {"не указано", "неизвестно", "unknown", "", None, "-", "n/a"}
+
+def _clean_value(v):
+    if isinstance(v, str) and v.strip().lower() in SENTINELS:
+        return None
+    return v
 
 # Требуемые поля по типу (минимум для расчёта цены и программы)
 REQUIRED_BY_TYPE = {
@@ -140,8 +151,15 @@ def _true(v) -> bool:
 _DATE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b")
 _TIME = re.compile(r"\b([01]?\d|2[0-3])[:.](\d{2})\b")
 _AGE  = re.compile(r"\b(\d{1,2})\s*(год|года|лет)\b", re.IGNORECASE)
-_CNT  = re.compile(r"\b(\d{1,3})\s*(гостей|чел|человек)\b", re.IGNORECASE)
+_CNT  = re.compile(r"\b(\d{1,3})\s*(гостей|гост[яе]?|чел(?:овек[а]?)*|человек|детей|участник(?:ов)?)\b", re.IGNORECASE)
 _NAME = re.compile(r"(?:для|у|сын|дочь|именинник|именинница)\s+([А-ЯЁA-Z][а-яёa-z\-]+)")
+# Расширенный поиск имени (именинник/сын/дочь/юбиляр + самостоятельное имя)
+NAME_HINTS = r"(?:именинник|именинница|сын|дочь|ребёнок|ребенок|юбиляр|дочк[аи])"
+RE_NAME = re.compile(rf"{NAME_HINTS}[^A-Za-zА-Яа-яЁё]*([A-ZА-ЯЁ][a-zа-яё]+)", re.IGNORECASE)
+RE_STANDALONE_NAME = re.compile(r'(^|[,\s])([A-ZА-ЯЁ][a-zа-яё]{2,})($|[,\s])')
+# Место (с кавычками и без)
+RE_LOCATION_QUOTED = re.compile(r'(?:кафе|ресторан|ТРЦ|бар|клуб|школа|сад|дет(?:ский)? сад|дом|квартира)\s*[«"](.*?)[»"]', re.IGNORECASE)
+RE_LOCATION_GENERIC = re.compile(r'\b(дом|квартира|дет(?:ский)? сад|школа|ресторан|кафе|ТРЦ|бар|клуб)\b', re.IGNORECASE)
 # Важно: здесь извлекаем место в «оригинальном» регистре (а не lower),
 # чтобы не терять «Парус» → «Парус»
 _PLACE_HINTS = ["кафе","бар","ресторан","зал","лофт","школ","сад","трц","тц","дом","клуб"]
@@ -188,17 +206,58 @@ def _guess_place_local(s: str) -> str|None:
 def _quick_extract_fields_from_user_text(text: str) -> dict:
     if not text: return {}
     out = {}
+    # имя
+    m = RE_NAME.search(text)
+    if not m:
+        m = RE_STANDALONE_NAME.search(text)
+        if m:
+            out["celebrant_name"] = m.group(2).strip().title()
+    else:
+        out["celebrant_name"] = m.group(1).strip().title()
+    # гости
+    m = re.search(r'(?:гостей|человек)\s*(?:≈|~|=|:)?\s*(\d{1,3})', text, re.IGNORECASE)
+    if m:
+        out["guests_count"] = int(m.group(1))
+    # дата/время (простые формы)
     if (d := _norm_date_local(text)): out["event_date"] = d
     if (t := _norm_time_local(text)): out["event_time"] = t
-    if (p := _guess_place_local(text)): out["event_location"] = p
-    if (m := _NAME.search(text)): out["celebrant_name"] = m.group(1)
+    # место
+    m = RE_LOCATION_QUOTED.search(text)
+    if m:
+        title = m.group(1).strip().replace('«','"').replace('»','"')
+        kind = re.search(r'(кафе|ресторан|ТРЦ|бар|клуб|школа|сад|дет(?:ский)? сад|дом|квартира)', text, re.IGNORECASE)
+        prefix = kind.group(1).lower() if kind else "место"
+        out["event_location"] = f'{prefix} "{title}"'
+    else:
+        if (p := _guess_place_local(text)):
+            out["event_location"] = p
+        else:
+            m = RE_LOCATION_GENERIC.search(text)
+            if m: out["event_location"] = m.group(0).lower()
+    # возраст/аудитория
     if (m := _AGE.search(text)):  out["celebrant_age"] = int(m.group(1))
-    if (m := _CNT.search(text)):  out["guests_count"]  = int(m.group(1))
+    if (m := _CNT.search(text)):  out["guests_count"]  = out.get("guests_count") or int(m.group(1))
     # грубые подсказки по аудитории
     low = text.lower()
     if "дет" in low: out["guests_age"] = "дети"
     if "взросл" in low: out["guests_age"] = "взрослые"
     return out
+
+# ── безопасный upsert: НЕ затираем уже заполненное и игнорируем «пустые» ----
+def upsert_state_safe(user_id: str, parsed: dict) -> dict:
+    st = get_state(user_id) or {}
+    changed = {}
+    for k, v in (parsed or {}).items():
+        if k not in SAFE_KEYS: 
+            continue
+        v = _clean_value(v)
+        if v is None:
+            continue
+        if (st.get(k) in (None, "",) or st.get(k) in SENTINELS):
+            changed[k] = v
+    if changed:
+        update_state(user_id, changed)
+    return get_state(user_id)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Мягкое вступление перед вопросами
@@ -229,6 +288,51 @@ def missing_info_keys(state):
 
     # Фильтруем по факту незаполненности
     return [k for k in required if not state.get(k)]
+
+# ── список недостающих ТОЛЬКО реально пустых (для детерминированных вопросов)
+def compute_missing(state: dict) -> list[str]:
+    event_type = (state.get("show_type") or "").strip().lower()
+    required = list(REQUIRED_BY_TYPE.get(event_type, []))
+    missing = []
+    for k in required:
+        # учитываем нормализованные аналоги
+        if k == "event_date":
+            v = state.get("event_date") or state.get("event_date_iso")
+        elif k == "event_time":
+            v = state.get("event_time") or state.get("event_time_24")
+        else:
+            v = state.get(k)
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            missing.append(k)
+    # семейное: если явно «нет именинника» — не требуем имя
+    if event_type == "семейное" and str(state.get("no_celebrant","")).strip().lower() in {"да","yes","true","y","1"}:
+        if "celebrant_name" in missing:
+            missing.remove("celebrant_name")
+        if "celebrant_gender" in missing:
+            missing.remove("celebrant_gender")
+        if "celebrant_age" in missing:
+            missing.remove("celebrant_age")
+    return missing
+
+# ── детерминированные вопросы вместо LLM-шаблонов ---------------------------
+QUESTION_LABELS = {
+    "event_date": "Дата мероприятия?",
+    "event_time": "Время мероприятия?",
+    "event_location": "Где будет проходить мероприятие (дом/детсад/школа/ресторан)?",
+    "celebrant_name": "Как зовут именинника?",
+    "celebrant_gender": "Какой пол именинника?",
+    "celebrant_age": "Сколько лет имениннику?",
+    "guests_count": "Сколько гостей ожидается?",
+    "guests_gender": "Какой пол у гостей детского возраста?",
+    "guests_age": "Какой возраст у гостей детского возраста?",
+    "compere_availability": "Нужен ли ведущий?",
+    "children_adult_ratio": "Какое соотношение детей и взрослых?",
+}
+
+def build_questions(state: dict, missing_keys: list[str]) -> str:
+    prefix = "Чтобы Арсений подготовил программу, ответьте, пожалуйста, на несколько вопросов:\n"
+    bullets = [f"- {QUESTION_LABELS[k]}" for k in missing_keys if k in QUESTION_LABELS]
+    return prefix + "\n".join(bullets)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # upsert с нормализациями и «не затирать непустое»
@@ -293,7 +397,7 @@ def parse_structured_pairs(text: str) -> dict:
         "celebrant_age":          r"Возраст\s+(?:ключевого\s+участника|именинника)[\s\S]*?[-—:]\s*([^\n\r]+)",
         "event_date":             r"Дата\s+мероприятия\s*[-—:]\s*([^\n\r]+)",
         "event_time":             r"Время\s+мероприятия\s*[-—:]\s*([^\n\r]+)",
-        "event_location":         r"(?:Название\s+места\s+проведения|Название\s+места)\s*[-—:]\s*([^\n\r]+)",
+        "event_location":         r"(?:(?:Название\s+)?места\s+проведения|Название\s+места|локац(?:ия|ии)|адрес)\s*[-—:]\s*([^\n\r]+)",
         "guests_count":           r"Количество\s+гостей\s*[-—:]\s*([^\n\r]+)",
         "guests_gender":          r"Пол\s+гостей\s*[-—:]\s*([^\n\r]+)",
         "guests_age":             r"Возраст\s+гостей\s*[-—:]\s*([^\n\r]+)",
@@ -316,12 +420,60 @@ def parse_structured_pairs(text: str) -> dict:
 # Нормализация даты/времени
 # ──────────────────────────────────────────────────────────────────────────────
 def _clean_time(raw_time: str) -> str:
-    m = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", raw_time or "")
+    s = (raw_time or "").strip().replace(".", ":").replace(" ", "")
+    m = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", s)
     return m.group(0) if m else ""
 
 def _clean_date(raw_date: str) -> str:
-    m = re.search(r"\b\d{4}-\d{2}-\d{2}\b", raw_date or "")
+    s = (raw_date or "").strip().replace("/", "-").replace(".", "-")
+    m = re.search(r"\b\d{4}-\d{2}-\d{2}\b", s)
     return m.group(0) if m else ""
+
+# ── нормализация места (приводим к виду: тип "Название") --------------------
+def normalize_location(state: dict):
+    loc = state.get("event_location")
+    if not loc:
+        return
+    loc2 = str(loc)
+    if '«' in loc2 or '»' in loc2:
+        loc2 = loc2.replace('«','"').replace('»','"')
+    else:
+        m = re.match(r'(кафе|ресторан|трц|бар|клуб|школа|сад|детский сад|дом|квартира)\s+(.+)', loc2, re.IGNORECASE)
+        if m:
+            loc2 = f'{m.group(1).lower()} "{m.group(2).strip()}"'
+    if loc2 != loc:
+        state["event_location"] = loc2
+
+# ── нормализация даты/времени через dateparser (RU, будущее) ----------------
+_TZ = pytz.timezone(os.getenv("LOCAL_TZ", "Europe/Moscow"))
+
+def normalize_datetime(state: dict):
+    date_txt = state.get("event_date")
+    time_txt = state.get("event_time")
+    if not date_txt and not time_txt:
+        return
+    settings = {
+        "PREFER_DATES_FROM": "future",
+        "RELATIVE_BASE": datetime.now(_TZ),
+        "LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD": 0.0,
+        "DATE_ORDER": "DMY",
+        "STRICT_PARSING": False,
+        "SKIP_TOKENS": ["в"],
+    }
+    dt = None
+    if date_txt and time_txt:
+        dt = dateparser.parse(f"{date_txt} {time_txt}", languages=["ru"], settings=settings)
+    elif date_txt:
+        dt = dateparser.parse(f"{date_txt}", languages=["ru"], settings=settings)
+    if dt:
+        if dt.tzinfo is None:
+            dt = _TZ.localize(dt)
+        else:
+            dt = dt.astimezone(_TZ)
+        state["event_date_iso"] = dt.date().isoformat()
+        state["event_time_24"] = dt.strftime("%H:%M")
+        if not state.get("event_time"):
+            state["event_time"] = state["event_time_24"]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Основной хендлер блока 3 (унифицированный)
@@ -359,7 +511,14 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     try:
         quick = _quick_extract_fields_from_user_text(message_text or "")
         if quick:
-            st = upsert_state(user_id, quick)
+            st = upsert_state_safe(user_id, quick)
+            # сразу нормализуем место/дату — чтобы не переспрашивать имя/место/дату
+            tmp = get_state(user_id) or {}
+            normalize_location(tmp)
+            normalize_datetime(tmp)
+            if tmp:
+                update_state(user_id, tmp)
+            st = get_state(user_id) or {}
     except Exception as e:
         logger.warning(f"[block03] quick extract failed: {e}")
 
@@ -402,7 +561,15 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     except Exception:
         parsed_data = parse_structured_pairs(structured_reply)
 
-    st = upsert_state(user_id, parsed_data)
+    # безопасный мердж ответа модели
+    st = upsert_state_safe(user_id, parsed_data)
+    # повторная нормализация (если модель вернула без кавычек/время в «19.00»)
+    tmp = get_state(user_id) or {}
+    normalize_location(tmp)
+    normalize_datetime(tmp)
+    if tmp:
+        update_state(user_id, tmp)
+    st = get_state(user_id) or {}
     logger.info("[block03] после upsert: %s", {k: st.get(k) for k in SAFE_KEYS})
 
     # Снепшот
@@ -498,34 +665,24 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
 
     # 4) Доспрашивание недостающих полей (до 3 попыток), без «полотенец»
     st = get_state(user_id) or {}
-    missing = missing_info_keys(st)
+    # используем строгий список пропусков (без уже заполненных)
+    missing = compute_missing(st)
     attempts = int(st.get("clarification_attempts", 0))
     logger.info("[block03] missing=%s attempts=%s", missing, attempts)
 
     if missing and attempts < 3:
         # Список недостающих в человекочитаемом виде (коротко)
-        # Берём максимум 3, чтобы не пугать полотенцем
-        short_list = [KEY_NAMES.get(k, k) for k in missing[:3]]
-        # Формируем краткую подсказку для ИИ, чтобы он задал 2–3 точных вопроса
-        prompt = f"""{global_prompt}
-
-{stage_prompt}
-
-Ранее от клиента: {prev_info}
-
-Сегодня: {client_request_date_str}
-
-Сообщение клиента: "{message_text}"
-
-Важно: НЕ пиши резюме, НЕ благодарностей.
-Задай 2–3 коротких вопроса по недостающим пунктам: {", ".join(short_list)}.
-Ответ — только список вопросов, без повторов и без summary.
-"""
-        questions = (ask_openai(prompt) or "").strip()
+        # Берём максимум 3, чтобы не пугать полотенцем; формируем вопросы детерминированно
+        short_missing = missing[:3]
+        questions = build_questions(st, short_missing)
         if questions:
+            # мягкое вступление + наши пули (без LLM, чтобы не было «Как зовут…» когда уже «для Витя»)
             preface = _build_soft_preface(event_type, st)
             final_msg = f"{preface}\n{questions}"
-            send_reply_func(final_msg)
+            try:
+                send_reply_func(final_msg)
+            except Exception:
+                pass
             now_ts = time.time()
             update_state(user_id, {
                 "stage": "block3",
@@ -561,9 +718,9 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
 
     # 6) Фолбек: все данные есть, но availability ещё не отправлен
     st = get_state(user_id) or {}
-    if (not missing) and (not st.get("availability_reply_sent")) and st.get("event_date") and st.get("event_time"):
-        date_iso = _clean_date(st.get("event_date"))
-        time_24  = _clean_time(st.get("event_time"))
+    if (not missing) and (not st.get("availability_reply_sent")) and (st.get("event_date") or st.get("event_date_iso")) and (st.get("event_time") or st.get("event_time_24")):
+        date_iso = st.get("event_date_iso") or _clean_date(st.get("event_date"))
+        time_24  = st.get("event_time_24") or _clean_time(st.get("event_time"))
         if date_iso and time_24:
             schedule = load_schedule_from_s3()
             availability = check_date_availability(date_iso, time_24, schedule)

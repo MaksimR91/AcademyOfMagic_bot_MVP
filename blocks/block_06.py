@@ -32,6 +32,7 @@ SCENARIO_STAGE_MAP = {
     "block3b": "Получение информации",
     "block3c": "Получение информации",
     "block3d": "Получение информации",
+    "block3":  "Получение информации",
     "block4":  "Отправка материалов",
     "block5":  "Ручная обработка заказа",
     "block6": "CRM",
@@ -233,13 +234,13 @@ def retry_export(user_id: str):
     logger.info(f"[block6] scheduled retry in {RETRY_DELAY_SECONDS}s user={user_id}")
     
 def _schedule_retry(user_id: str):
-    plan(user_id, "blocks.block_6:retry_export", RETRY_DELAY_SECONDS)
+    plan(user_id, "blocks.block_06:retry_export", RETRY_DELAY_SECONDS)
 
 def _cancel_retry_if_any(user_id: str):
     """Безопасно снимаем задачу ретрая, если она была поставлена ранее."""
     try:
         from utils.reminder_engine import remove_job
-        remove_job(f"{user_id}:blocks.block_6:retry_export")
+        remove_job(f"{user_id}:blocks.block_06:retry_export")
     except Exception:
         pass
 

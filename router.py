@@ -168,6 +168,10 @@ def _route_message_impl(
         "last_sender": "bot" if force_stage else "user"
     })
     last_sender = "bot" if force_stage else "user"
+
+    # Нормализуем старые обозначения этапа третьего блока
+    if stage in ("block3a", "block3b", "block3c"):
+        stage = "block3"
     logger.info(f"📍 route_message → user={user_id} stage={stage}")
 
     # -------- канал для сообщений Арсению ----------------------------------
