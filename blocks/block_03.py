@@ -156,13 +156,20 @@ _NAME = re.compile(r"(?:для|у|сын|дочь|именинник|имени�
 # Расширенный поиск имени (именинник/сын/дочь/юбиляр + самостоятельное имя)
 NAME_HINTS = r"(?:именинник|именинница|сын|дочь|ребёнок|ребенок|юбиляр|дочк[аи])"
 RE_NAME = re.compile(rf"{NAME_HINTS}[^A-Za-zА-Яа-яЁё]*([A-ZА-ЯЁ][a-zа-яё]+)", re.IGNORECASE)
-RE_STANDALONE_NAME = re.compile(r'(^|[,\s])([A-ZА-ЯЁ][a-zа-яё]{2,})($|[,\s])')
+# standalone: не ловим «День» в «День рождения», и фильтруем частые не-имена
+RE_STANDALONE_NAME = re.compile(
+    r'(^|[,\s])([A-ZА-ЯЁ][a-zа-яё]{2,})(?!\s*рождения)($|[,\s])',
++    re.IGNORECASE)
 # Место (с кавычками и без)
 RE_LOCATION_QUOTED = re.compile(r'(?:кафе|ресторан|ТРЦ|бар|клуб|школа|сад|дет(?:ский)? сад|дом|квартира)\s*[«"](.*?)[»"]', re.IGNORECASE)
 RE_LOCATION_GENERIC = re.compile(r'\b(дом|квартира|дет(?:ский)? сад|школа|ресторан|кафе|ТРЦ|бар|клуб)\b', re.IGNORECASE)
 # Важно: здесь извлекаем место в «оригинальном» регистре (а не lower),
 # чтобы не терять «Парус» → «Парус»
 _PLACE_HINTS = ["кафе","бар","ресторан","зал","лофт","школ","сад","трц","тц","дом","клуб"]
+# Слова, которые часто ошибочно принимают за имя при standalone-матче
+STOP_NAME_TOKENS = {
+    "День","Рождения","Праздник","Юбилей","Сын","Дочь","Ребёнок","Ребенок","Пати","Праздуха","DR","ДР"
+}
 
 def _norm_date_local(s: str) -> str|None:
     m = _DATE.search(s)
@@ -211,7 +218,11 @@ def _quick_extract_fields_from_user_text(text: str) -> dict:
     if not m:
         m = RE_STANDALONE_NAME.search(text)
         if m:
-            out["celebrant_name"] = m.group(2).strip().title()
+            candidate = m.group(2).strip().title()
+            # отбрасываем частые не-имена и кейс «День рождения ...»
+            if (candidate not in STOP_NAME_TOKENS
+                and not text.strip().lower().startswith("день рождения")):
+                out["celebrant_name"] = candidate
     else:
         out["celebrant_name"] = m.group(1).strip().title()
     # гости
@@ -330,9 +341,9 @@ QUESTION_LABELS = {
 }
 
 def build_questions(state: dict, missing_keys: list[str]) -> str:
-    prefix = "Чтобы Арсений подготовил программу, ответьте, пожалуйста, на несколько вопросов:\n"
+    # Возвращаем только список пунктов — без вступления (чтобы не дублировать префейс)
     bullets = [f"- {QUESTION_LABELS[k]}" for k in missing_keys if k in QUESTION_LABELS]
-    return prefix + "\n".join(bullets)
+    return "\n".join(bullets)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # upsert с нормализациями и «не затирать непустое»
@@ -678,7 +689,11 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
         if questions:
             # мягкое вступление + наши пули (без LLM, чтобы не было «Как зовут…» когда уже «для Витя»)
             preface = _build_soft_preface(event_type, st)
-            final_msg = f"{preface}\n{questions}"
+            # избегаем двойного вступления: build_questions возвращает ТОЛЬКО буллеты
+            if questions.strip():
+                final_msg = f"{preface}\n{questions}"
+            else:
+                final_msg = preface
             try:
                 send_reply_func(final_msg)
             except Exception:
