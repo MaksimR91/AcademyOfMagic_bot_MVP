@@ -135,6 +135,87 @@ def _true(v) -> bool:
     return str(v).strip().lower() in {"true","yes","да","y","1","истина"}
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Лёгкий парсер полей прямо из пользовательского текста (без ИИ)
+# ──────────────────────────────────────────────────────────────────────────────
+_DATE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b")
+_TIME = re.compile(r"\b([01]?\d|2[0-3])[:.](\d{2})\b")
+_AGE  = re.compile(r"\b(\d{1,2})\s*(год|года|лет)\b", re.IGNORECASE)
+_CNT  = re.compile(r"\b(\d{1,3})\s*(гостей|чел|человек)\b", re.IGNORECASE)
+_NAME = re.compile(r"(?:для|у|сын|дочь|именинник|именинница)\s+([А-ЯЁA-Z][а-яёa-z\-]+)")
+# Важно: здесь извлекаем место в «оригинальном» регистре (а не lower),
+# чтобы не терять «Парус» → «Парус»
+_PLACE_HINTS = ["кафе","бар","ресторан","зал","лофт","школ","сад","трц","тц","дом","клуб"]
+
+def _norm_date_local(s: str) -> str|None:
+    m = _DATE.search(s)
+    if not m: return None
+    d, mo, y = m.groups()
+    y = (("20"+y) if y and len(y)==2 else y)
+    from datetime import datetime
+    if not y:
+        y = str(datetime.now().year)
+    try:
+        dd = int(d); mm = int(mo); yy = int(y)
+        if 1<=dd<=31 and 1<=mm<=12: return f"{yy:04d}-{mm:02d}-{dd:02d}"
+    except: 
+        return None
+
+def _norm_time_local(s: str) -> str|None:
+    m = _TIME.search(s)
+    if not m: return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if 0<=hh<=23 and 0<=mm<=59: return f"{hh:02d}:{mm:02d}"
+    return None
+
+def _guess_place_local(s: str) -> str|None:
+    low = s.lower()
+    for h in _PLACE_HINTS:
+        # ищем в lower, но возвращаем кусок из оригинальной строки
+        idx = low.find(h)
+        if idx >= 0:
+            # возьмём хвост после хинта и попробуем вытянуть «"Парус"» или слово
+            tail = s[idx+len(h):]
+            m_q = re.search(r'[«"]\s*([A-Za-zА-Яа-яЁё0-9 \-]+)\s*[»"]', tail)
+            if m_q:
+                return f'{s[idx:idx+len(h)]} "{m_q.group(1).strip()}"'
+            # fallback — одно-два слова после хинта
+            m_w = re.search(r"\s+([A-Za-zА-Яа-яЁё0-9\-]+(?:\s+[A-Za-zА-Яа-яЁё0-9\-]+)?)", tail)
+            if m_w:
+                return f'{s[idx:idx+len(h)]} {m_w.group(1).strip()}'
+            return s[idx:idx+len(h)]
+    return None
+
+def _quick_extract_fields_from_user_text(text: str) -> dict:
+    if not text: return {}
+    out = {}
+    if (d := _norm_date_local(text)): out["event_date"] = d
+    if (t := _norm_time_local(text)): out["event_time"] = t
+    if (p := _guess_place_local(text)): out["event_location"] = p
+    if (m := _NAME.search(text)): out["celebrant_name"] = m.group(1)
+    if (m := _AGE.search(text)):  out["celebrant_age"] = int(m.group(1))
+    if (m := _CNT.search(text)):  out["guests_count"]  = int(m.group(1))
+    # грубые подсказки по аудитории
+    low = text.lower()
+    if "дет" in low: out["guests_age"] = "дети"
+    if "взросл" in low: out["guests_age"] = "взрослые"
+    return out
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Мягкое вступление перед вопросами
+# ──────────────────────────────────────────────────────────────────────────────
+def _build_soft_preface(event_type: str, st: dict) -> str:
+    name = (st or {}).get("celebrant_name")
+    if event_type == "детское":
+        base = "Чтобы Арсений подготовил детское шоу"
+        if name:
+            base += f" для {name}"
+    elif event_type == "семейное":
+        base = "Чтобы Арсений учёл семейный формат вашего праздника"
+    else:
+        base = "Чтобы Арсений подготовил программу под ваш формат"
+    return f"{base}, ответьте, пожалуйста, на пару вопросов:"
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Dynamic required по типу + no_celebrant (для семейного)
 # ──────────────────────────────────────────────────────────────────────────────
 def missing_info_keys(state):
@@ -272,6 +353,15 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     prev_info = st.get("event_description", "")
     updated_description = (prev_info + "\n" + (message_text or "")).strip()
     update_state(user_id, {"event_description": updated_description})
+
+    
+    # Быстро добираем поля прямо из текста пользователя (без ИИ)
+    try:
+        quick = _quick_extract_fields_from_user_text(message_text or "")
+        if quick:
+            st = upsert_state(user_id, quick)
+    except Exception as e:
+        logger.warning(f"[block03] quick extract failed: {e}")
 
     # Определяем тип шоу
     event_type = (st.get("show_type") or "").strip().lower()
@@ -433,12 +523,14 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
 """
         questions = (ask_openai(prompt) or "").strip()
         if questions:
-            send_reply_func(questions)
+            preface = _build_soft_preface(event_type, st)
+            final_msg = f"{preface}\n{questions}"
+            send_reply_func(final_msg)
             now_ts = time.time()
             update_state(user_id, {
                 "stage": "block3",
                 "clarification_attempts": attempts + 1,
-                "last_bot_question": questions,
+                "last_bot_question": final_msg,
                 "last_sender": "bot",
                 "last_bot_ts": now_ts,
                 REM_KEYS["r1_sent"]: False,

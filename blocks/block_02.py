@@ -22,7 +22,7 @@ REM1_STATIC_PATH = "prompts/block02_reminder_1_static.txt"
 REM2_STATIC_PATH = "prompts/block02_reminder_2_static.txt"
 
 # Флаг: использовать ИИ-сообщения или статичные тексты
-USE_AI_BLOCK2 = (os.getenv("USE_AI_BLOCK2", "true").strip().lower() == "true")
+USE_AI_BLOCK2 = (os.getenv("USE_AI_BLOCK2", "false").strip().lower() == "true")
 
 # Время до повторного касания (4 часа)
 DELAY_TO_BLOCK_2_1_HOURS = 4
