@@ -106,9 +106,7 @@ def ask_for_busy_flow(prompt: str):
 
 # конфиги блоков: (module_path, handler_fn, stage_name, ns_for_task_refs)
 BLOCKS = [
-    ("blocks.block_03a", "handle_block3a", "block3a", "blocks.block_03a"),
-    ("blocks.block_03b", "handle_block3b", "block3b", "blocks.block_03b"),
-    ("blocks.block_03c", "handle_block3c", "block3c", "blocks.block_03c"),
+    ("blocks.block_03", "handle_block3", "block3", "blocks.block_03")
 ]
 
 # ================== ТЕСТЫ ДЛЯ BLOCK 2 ==================
@@ -344,7 +342,7 @@ def test_block3a_finalize_routes_to_handover(monkeypatch, state_store):
     """
     from importlib import import_module
     plan_spy = PlanSpy(monkeypatch)  # не обязателен здесь, но пусть будет для единообразия
-    mod = import_module("blocks.block_03a")
+    mod = import_module("blocks.block_03")
     plan_spy.patch_into_module(monkeypatch, mod)
 
     calls = []
@@ -354,7 +352,7 @@ def test_block3a_finalize_routes_to_handover(monkeypatch, state_store):
     patch_aux_for_block3x(monkeypatch, mod, availability="available")
 
     uid = "u3a_finalize"
-    state_store[uid] = {"stage": "block3a", "last_bot_question": "?"}
+    state_store[uid] = {"stage": "block3", "last_bot_question": "?"}
 
     # имитируем, что уже отправили второе напоминание и прошло 4 часа тишины
     mod.finalize_if_still_silent(uid, lambda x: None)
@@ -423,9 +421,7 @@ def test_block3x_any_user_reply_cancels_timers(monkeypatch, state_store, mod_pat
 # ================== ДОБАВЛЕНО: идемпотентность R1/R2/Final для всех блоков ==================
 @pytest.mark.parametrize("mod_path,stage,ns", [
     ("blocks.block_02","block2","blocks.block_02"),
-   ("blocks.block_03a","block3a","blocks.block_03a"),
-   ("blocks.block_03b","block3b","blocks.block_03b"),
-   ("blocks.block_03c","block3c","blocks.block_03c"),
+   ("blocks.block_03","block3","blocks.block_03")
 ])
 def test_reminders_idempotent(monkeypatch, state_store, mod_path, stage, ns):
     """

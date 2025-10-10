@@ -134,7 +134,7 @@ def test_block1_booking_is_not_handover(monkeypatch, state_store):
     "Дорого. Можно дешевле?",
 ])
 def test_block3a_triggers_handover(monkeypatch, state_store, text):
-    b3a = import_module("blocks.block_03a")
+    b3a = import_module("blocks.block_03")
     router_calls = []
     install_fake_router(monkeypatch, router_calls)
     install_state_api(monkeypatch, b3a, state_store)
@@ -142,7 +142,7 @@ def test_block3a_triggers_handover(monkeypatch, state_store, text):
     patch_schedule(monkeypatch, b3a)
 
     uid = "u_b3a"
-    state_store[uid] = {"stage": "block3a"}
+    state_store[uid] = {"stage": "block3"}
     b3a.handle_block3a(text, uid, lambda _: None, client_request_date=time.time())
 
     assert any(c["force_stage"] == "block5" for c in router_calls), "Должен быть хендовер в block5"
@@ -151,7 +151,7 @@ def test_block3a_triggers_handover(monkeypatch, state_store, text):
     assert st.get("scenario_stage_at_handover") == "block3"
 
 def test_block3a_booking_is_not_handover(monkeypatch, state_store):
-    b3a = import_module("blocks.block_03a")
+    b3a = import_module("blocks.block_03")
     router_calls = []
     install_fake_router(monkeypatch, router_calls)
     install_state_api(monkeypatch, b3a, state_store)
@@ -159,7 +159,7 @@ def test_block3a_booking_is_not_handover(monkeypatch, state_store):
     patch_schedule(monkeypatch, b3a)
 
     uid = "u_b3a_book"
-    state_store[uid] = {"stage": "block3a"}
+    state_store[uid] = {"stage": "block3"}
     b3a.handle_block3a("Хочу пригласить Арсения на шоу", uid, lambda _: None, client_request_date=time.time())
 
     assert not any(c["force_stage"] == "block5" for c in router_calls)
@@ -170,7 +170,7 @@ def test_block3a_booking_is_not_handover(monkeypatch, state_store):
     "Можно скидку на взрослое шоу?",
 ])
 def test_block3b_triggers_handover(monkeypatch, state_store, text):
-    b3b = import_module("blocks.block_03b")
+    b3b = import_module("blocks.block_03")
     router_calls = []
     install_fake_router(monkeypatch, router_calls)
     install_state_api(monkeypatch, b3b, state_store)
@@ -178,7 +178,7 @@ def test_block3b_triggers_handover(monkeypatch, state_store, text):
     patch_schedule(monkeypatch, b3b)
 
     uid = "u_b3b"
-    state_store[uid] = {"stage": "block3b"}
+    state_store[uid] = {"stage": "block3"}
     # сигнатуры 3b и 3a должны совпадать: (message_text, user_id, send_reply_func, client_request_date)
     b3b.handle_block3b(text, uid, lambda _: None, client_request_date=time.time())
 
@@ -188,14 +188,14 @@ def test_block3b_triggers_handover(monkeypatch, state_store, text):
     assert st.get("scenario_stage_at_handover") == "block3"
 
 def test_block3b_booking_is_not_handover(monkeypatch, state_store):
-    b3b = import_module("blocks.block_03b")
+    b3b = import_module("blocks.block_03")
     router_calls = []
     install_fake_router(monkeypatch, router_calls)
     install_state_api(monkeypatch, b3b, state_store)
     patch_llm(monkeypatch, b3b, answer="{}")
     patch_schedule(monkeypatch, b3b)
     uid = "u_b3b_book"
-    state_store[uid] = {"stage": "block3b"}
+    state_store[uid] = {"stage": "block3"}
     b3b.handle_block3b("Хочу заказать Арсения на юбилей", uid, lambda _: None, client_request_date=time.time())
     assert not any(c["force_stage"] == "block5" for c in router_calls), "3b: booking не должен триггерить хендовер"
 
@@ -213,7 +213,7 @@ def test_block3c_triggers_handover(monkeypatch, state_store, text):
     patch_schedule(monkeypatch, b3c)
 
     uid = "u_b3c"
-    state_store[uid] = {"stage": "block3c"}
+    state_store[uid] = {"stage": "block3"}
     b3c.handle_block3c(text, uid, lambda _: None, client_request_date=time.time())
 
     assert any(c["force_stage"] == "block5" for c in router_calls), "3c: должен быть хендовер в block5"
@@ -229,7 +229,7 @@ def test_block3c_booking_is_not_handover(monkeypatch, state_store):
     patch_schedule(monkeypatch, b3c)
 
     uid = "u_b3c_book"
-    state_store[uid] = {"stage": "block3c"}
+    state_store[uid] = {"stage": "block3"}
     b3c.handle_block3c("Хотим пригласить Арсения на семейный праздник", uid, lambda _: None, client_request_date=time.time())
     assert not any(c["force_stage"] == "block5" for c in router_calls), "3c: booking не должен триггерить хендовер"
 

@@ -12,10 +12,10 @@ from utils.lang_prompt import build_lang_switch_message
 # ===== блоки ===============================================================
 from blocks import (
     block_01, block_02,
-    block_03a, block_03b, block_03c, block_03d,
-    block_04,            # остался как есть
-    block_05,            # новый: раньше был block_09 (handover)
-    block_06,            # новый: раньше был block_10 (итог/финал и т.п.)
+    block_03, block_03d,   # 👈 единый block_03
+    block_04,
+    block_05,
+    block_06,
 )
 
 # ── читаем список админ-номеров один раз при импорте ────────────────
@@ -26,15 +26,12 @@ ADMIN_NUMBERS = {
 # --- <stage> → (module, handler_name) --------------------------------------
 BLOCK_MAP = {
     "block1":  (block_01,  "handle_block1"),
-    "block2":  (block_02,  "handle_block2"),  # заглушка, фактический handler будет выбран ниже
-    "block3a": (block_03a, "handle_block3a"),
-    "block3b": (block_03b, "handle_block3b"),
-    "block3c": (block_03c, "handle_block3c"),
+    "block2":  (block_02,  "handle_block2"),
+    # все три стадии → один модуль/один хендлер
+    "block3": (block_03,  "handle_block3"),
     "block3d": (block_03d, "handle_block3d"),
     "block4":  (block_04,  "handle_block4"),
-    # 9 → 5
     "block5":  (block_05,  "handle_block5"),
-    # 10 → 6
     "block6":  (block_06,  "handle_block6"),
 }
 
@@ -98,7 +95,7 @@ def _route_message_impl(
             from state.state import delete_state
             delete_state(user_id)
 
-            for mod_name in ("blocks.block_03a", "blocks.block_03b", "blocks.block_03c"):
+            for mod_name in ("blocks.block_03",):  # 👈 один модуль
                 try:
                     mod = __import__(mod_name, fromlist=["DATE_DECISION_FLAGS"])
                     getattr(mod, "DATE_DECISION_FLAGS", {}).pop(user_id, None)
