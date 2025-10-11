@@ -153,16 +153,36 @@ _TIME = re.compile(r"\b([01]?\d|2[0-3])[:.](\d{2})\b")
 _AGE  = re.compile(r"\b(\d{1,2})\s*(год|года|лет)\b", re.IGNORECASE)
 _CNT  = re.compile(r"\b(\d{1,3})\s*(гостей|гост[яе]?|чел(?:овек[а]?)*|человек|детей|участник(?:ов)?)\b", re.IGNORECASE)
 _NAME = re.compile(r"(?:для|у|сын|дочь|именинник|именинница)\s+([А-ЯЁA-Z][а-яёa-z\-]+)")
-# Расширенный поиск имени (именинник/сын/дочь/юбиляр + самостоятельное имя)
-NAME_HINTS = r"(?:именинник|именинница|сын|дочь|ребёнок|ребенок|юбиляр|дочк[аи])"
-RE_NAME = re.compile(rf"{NAME_HINTS}[^A-Za-zА-Яа-яЁё]*([A-ZА-ЯЁ][a-zа-яё]+)", re.IGNORECASE)
-# Больше НЕ используем standalone-поиск имени — слишком много ложных срабатываний.
-# Если всё же когда-нибудь вернём, держим список месяцев/стоп-слов.
+# Имя будет давать только ИИ/доспрашивание. Тут — только валидация для страховки.
 MONTH_TOKENS = {
     "январь","января","февраль","февраля","март","марта","апрель","апреля",
     "май","мая","июнь","июня","июль","июля","август","августа",
     "сентябрь","сентября","октябрь","октября","ноябрь","ноября","декабрь","декабря"
 }
+KIN_TOKENS = {"сын","дочь","ребёнок","ребенок","именинник","именинница","юбиляр"}
+GENERIC_TOKENS = {"день","рождения","праздник","юбилей","др","dr","пати"}
+
+def _is_probable_name(s: str) -> bool:
+    if not s: return False
+    t = s.strip().strip('«»"').replace("  "," ")
+    # допустимы 1–2 слова (имя или имя+уменьш.)
+    parts = [p for p in re.split(r"\s+", t) if p]
+    if not (1 <= len(parts) <= 2): 
+        return False
+    # каждое слово начинается с буквы и не является месяцем/общим словом/родством
+    for p in parts:
+        pl = p.lower()
+        if pl in MONTH_TOKENS or pl in KIN_TOKENS or pl in GENERIC_TOKENS:
+            return False
+        if not re.match(r"^[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\-']*$", p):
+            return False
+    # первое слово с заглавной
+    if not parts[0][0].isalpha() or not parts[0][0].isupper():
+        return False
+    # не слишком коротко
+    if len(parts[0]) < 3:
+        return False
+    return True
 # Место (с кавычками и без)
 RE_LOCATION_QUOTED = re.compile(r'(?:кафе|ресторан|ТРЦ|бар|клуб|школа|сад|дет(?:ский)? сад|дом|квартира)\s*[«"](.*?)[»"]', re.IGNORECASE)
 RE_LOCATION_GENERIC = re.compile(r'\b(дом|квартира|дет(?:ский)? сад|школа|ресторан|кафе|ТРЦ|бар|клуб)\b', re.IGNORECASE)
@@ -216,13 +236,7 @@ def _guess_place_local(s: str) -> str|None:
 def _quick_extract_fields_from_user_text(text: str) -> dict:
     if not text: return {}
     out = {}
-    # имя — ТОЛЬКО по маркерам (именинник/сын/дочь/юбиляр/… или «зовут/имя» в промпте модели)
-    m = RE_NAME.search(text)
-    if m:
-        candidate = m.group(1).strip().title()
-        # подстраховка: не принимаем название месяца за имя
-        if candidate.lower() not in MONTH_TOKENS:
-            out["celebrant_name"] = candidate
+    # ИМЯ НЕ ПАРСИМ регекспами — отдаём это ИИ/доспрашиванию.
     # гости
     m = re.search(r'(?:гостей|человек)\s*(?:≈|~|=|:)?\s*(\d{1,3})', text, re.IGNORECASE)
     if m:
@@ -272,7 +286,8 @@ def upsert_state_safe(user_id: str, parsed: dict) -> dict:
 # Мягкое вступление перед вопросами
 # ──────────────────────────────────────────────────────────────────────────────
 def _build_soft_preface(event_type: str, st: dict) -> str:
-    name = (st or {}).get("celebrant_name")
+    raw_name = (st or {}).get("celebrant_name")
+    name = raw_name if _is_probable_name(raw_name or "") else None
     if event_type == "детское":
         base = "Чтобы Арсений подготовил детское шоу"
         if name:
@@ -569,6 +584,10 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
             parsed_data = parsed
     except Exception:
         parsed_data = parse_structured_pairs(structured_reply)
+
+    # ❗ Валидация имени из ИИ/фолбэка перед апсертом
+    if "celebrant_name" in parsed_data and not _is_probable_name(parsed_data.get("celebrant_name")):
+        parsed_data.pop("celebrant_name", None)
 
     # безопасный мердж ответа модели
     st = upsert_state_safe(user_id, parsed_data)
