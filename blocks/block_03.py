@@ -14,7 +14,7 @@ from utils.wants_handover_ai import wants_handover_ai
 from utils.reminder_engine import plan
 from utils.schedule import load_schedule_from_s3, check_date_availability
 from state.state import get_state, update_state
-from utils.structured import build_structured_snapsho
+from utils.structured import build_structured_snapshot
 from utils.ru_morph import to_genitive_name
 
 # ──────────────────────────────────────────────────────────────────────────────
