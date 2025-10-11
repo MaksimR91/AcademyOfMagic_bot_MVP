@@ -14,7 +14,8 @@ from utils.wants_handover_ai import wants_handover_ai
 from utils.reminder_engine import plan
 from utils.schedule import load_schedule_from_s3, check_date_availability
 from state.state import get_state, update_state
-from utils.structured import build_structured_snapshot
+from utils.structured import build_structured_snapsho
+from utils.ru_morph import to_genitive_name
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Конфиг по типам шоу
@@ -287,7 +288,13 @@ def upsert_state_safe(user_id: str, parsed: dict) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 def _build_soft_preface(event_type: str, st: dict) -> str:
     raw_name = (st or {}).get("celebrant_name")
+    # имя уже проходит ваш _is_probable_name — оставляем это как есть
     name = raw_name if _is_probable_name(raw_name or "") else None
+    if name:
+        # склоняем под предлог "для" → родительный падеж
+        gender = (st or {}).get("celebrant_gender")  # "мужской"/"женский"/…
+        name = to_genitive_name(name, gender_hint=gender)
+
     if event_type == "детское":
         base = "Чтобы Арсений подготовил детское шоу"
         if name:
