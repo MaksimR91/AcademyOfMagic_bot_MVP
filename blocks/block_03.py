@@ -156,10 +156,13 @@ _NAME = re.compile(r"(?:для|у|сын|дочь|именинник|имени�
 # Расширенный поиск имени (именинник/сын/дочь/юбиляр + самостоятельное имя)
 NAME_HINTS = r"(?:именинник|именинница|сын|дочь|ребёнок|ребенок|юбиляр|дочк[аи])"
 RE_NAME = re.compile(rf"{NAME_HINTS}[^A-Za-zА-Яа-яЁё]*([A-ZА-ЯЁ][a-zа-яё]+)", re.IGNORECASE)
-# standalone: не ловим «День» в «День рождения», и фильтруем частые не-имена
-RE_STANDALONE_NAME = re.compile(
-    r'(^|[,\s])([A-ZА-ЯЁ][a-zа-яё]{2,})(?!\s*рождения)($|[,\s])',
-+    re.IGNORECASE)
+# Больше НЕ используем standalone-поиск имени — слишком много ложных срабатываний.
+# Если всё же когда-нибудь вернём, держим список месяцев/стоп-слов.
+MONTH_TOKENS = {
+    "январь","января","февраль","февраля","март","марта","апрель","апреля",
+    "май","мая","июнь","июня","июль","июля","август","августа",
+    "сентябрь","сентября","октябрь","октября","ноябрь","ноября","декабрь","декабря"
+}
 # Место (с кавычками и без)
 RE_LOCATION_QUOTED = re.compile(r'(?:кафе|ресторан|ТРЦ|бар|клуб|школа|сад|дет(?:ский)? сад|дом|квартира)\s*[«"](.*?)[»"]', re.IGNORECASE)
 RE_LOCATION_GENERIC = re.compile(r'\b(дом|квартира|дет(?:ский)? сад|школа|ресторан|кафе|ТРЦ|бар|клуб)\b', re.IGNORECASE)
@@ -213,18 +216,13 @@ def _guess_place_local(s: str) -> str|None:
 def _quick_extract_fields_from_user_text(text: str) -> dict:
     if not text: return {}
     out = {}
-    # имя
+    # имя — ТОЛЬКО по маркерам (именинник/сын/дочь/юбиляр/… или «зовут/имя» в промпте модели)
     m = RE_NAME.search(text)
-    if not m:
-        m = RE_STANDALONE_NAME.search(text)
-        if m:
-            candidate = m.group(2).strip().title()
-            # отбрасываем частые не-имена и кейс «День рождения ...»
-            if (candidate not in STOP_NAME_TOKENS
-                and not text.strip().lower().startswith("день рождения")):
-                out["celebrant_name"] = candidate
-    else:
-        out["celebrant_name"] = m.group(1).strip().title()
+    if m:
+        candidate = m.group(1).strip().title()
+        # подстраховка: не принимаем название месяца за имя
+        if candidate.lower() not in MONTH_TOKENS:
+            out["celebrant_name"] = candidate
     # гости
     m = re.search(r'(?:гостей|человек)\s*(?:≈|~|=|:)?\s*(\d{1,3})', text, re.IGNORECASE)
     if m:
