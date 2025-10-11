@@ -15,7 +15,7 @@ from utils.reminder_engine import plan
 from utils.schedule import load_schedule_from_s3, check_date_availability
 from state.state import get_state, update_state
 from utils.structured import build_structured_snapshot
-from utils.ru_morph import to_genitive_name
+from utils.ru_morph import to_genitive_name, normalize_proper_name
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Конфиг по типам шоу
@@ -592,9 +592,13 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     except Exception:
         parsed_data = parse_structured_pairs(structured_reply)
 
-    # ❗ Валидация имени из ИИ/фолбэка перед апсертом
-    if "celebrant_name" in parsed_data and not _is_probable_name(parsed_data.get("celebrant_name")):
-        parsed_data.pop("celebrant_name", None)
+    # ❗ Валидация + нормализация регистра имени из ИИ/фолбэка перед апсертом
+    if "celebrant_name" in parsed_data:
+        nm = (parsed_data.get("celebrant_name") or "").strip()
+        if not _is_probable_name(nm):
+            parsed_data.pop("celebrant_name", None)
+        else:
+            parsed_data["celebrant_name"] = normalize_proper_name(nm)
 
     # безопасный мердж ответа модели
     st = upsert_state_safe(user_id, parsed_data)
