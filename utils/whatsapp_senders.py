@@ -58,16 +58,19 @@ def send_image(to: str, media_id: str):
     )
 
 
-def send_document(to: str, media_id: str):
-    _post(
-        {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "document",
-            "document": {"id": media_id},
-        },
-        "document",
-    )
+def send_document(to: str, media_id: str, filename: str | None = None, caption: str | None = None):
+    doc = {"id": media_id}
+    if filename:
+        doc["filename"] = filename
+    if caption:
+        doc["caption"] = caption
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "document",
+        "document": doc,
+    }
+    return _post(payload, "WA document")
 
 
 def send_video(to: str, media_id: str):

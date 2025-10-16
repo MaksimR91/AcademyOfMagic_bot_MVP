@@ -31,7 +31,13 @@ DATASET = [
 ALLOWED = {"детское","взрослое","семейное","нестандартное","неизвестно"}
 
 def _expected_block(label):
-    return {"детское":"block3a","взрослое":"block3b","семейное":"block3c","нестандартное":"block3d"}[label]
+    # Теперь: детское/взрослое/семейное → единый block3
+    if label in {"детское","взрослое","семейное"}:
+        return "block3"
+    if label == "нестандартное":
+        return "block3d"
+    # "неизвестно" остаётся в block2 (репромпт), force_stage не должен ставиться
+    return None
 
 @pytest.fixture(autouse=True)
 def force_local_dev(monkeypatch):

@@ -45,8 +45,13 @@ def _response(user_id: str) -> dict:
     # next_step: если блок не положил явный next_step,
     # для первого касания (block1) считаем что это "hello"
     next_step = st.get("next_step")
-    if not next_step and stage == "block1":
-        next_step = "hello"
+    if not next_step:
+        if stage == "block1":
+            next_step = "hello"
+        elif stage == "block2":
+            # После первого касания block1 часто сразу переводит в block2.
+            # Если блок ещё не положил явный next_step — отдаём безопасный дефолт.
+            next_step = "classify"
     return {"ok": True, "stage": stage, "next_step": next_step}
 
 def route_message(text: str, normalized_number: str, client_name: str | None = None, message_uid: str | None = None, message_ts: int | None = None, force_stage: str | None = None):
@@ -83,10 +88,14 @@ def _route_message_impl(
     def send_text_func(body: str):
         send_text(_current_wa_to(), body)
 
-    def send_document_func(media_id: str):
-        send_document(_current_wa_to(), media_id)
+    # Принимаем filename/caption и лишние kwargs на будущее,
+    # чтобы блоки могли передавать метаданные файла.
+    def send_document_func(media_id: str, *, filename: str | None = None, caption: str | None = None, **_):
+        send_document(_current_wa_to(), media_id, filename=filename, caption=caption)
 
-    def send_video_func(media_id: str):
+    # На случай, если блоки начнут передавать caption и к видео — не падаем.
+    def send_video_func(media_id: str, *, caption: str | None = None, **_):
+        # Сейчас caption не используется, но сигнатура «прозрачная»
         send_video(_current_wa_to(), media_id)
 
     # ---------- техническая команда "#reset" (только для админа) ----------
@@ -102,11 +111,19 @@ def _route_message_impl(
                 except Exception:
                     pass
 
-            # 🧹 чистим отложенные джобы
-            from utils.reminder_engine import sched
-            for job in sched.get_jobs():
-                if job.id.startswith(f"{user_id}:"):
-                    sched.remove_job(job.id)
+            # 🧹 чистим отложенные джобы надёжно
+            from utils.reminder_engine import cancel_user_jobs
+            cancel_user_jobs(user_id)
+
+            # Явно устанавливаем начальную стадию и сбрасываем следы экспорта/ретраев
+            update_state(user_id, {
+                "stage": "block1",
+                "next_step": "hello",
+                "notion_exported": False,
+                "notion_export_error": False,
+                "notion_retry_count": 0,
+                "notion_page_id": None,
+            })
 
             send_text(_current_wa_to(), "State cleared.")
         else:

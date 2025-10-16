@@ -35,7 +35,8 @@ SCENARIO_STAGE_MAP = {
     "block3":  "Получение информации",
     "block4":  "Отправка материалов",
     "block5":  "Ручная обработка заказа",
-    "block6": "CRM",
+    # В Notion нет опции "CRM" → используем безопасное бизнес-название
+    "block6":  "Ручная обработка заказа",
 }
 
 # ───────────────── Причины handover (для комментариев / отказов) ────────────
@@ -127,7 +128,9 @@ def _build_notion_properties(st: dict) -> dict:
     if st.get("handover_reason") in SILENT_REFUSAL_REASONS:
         props["ЭТАП"] = {"status": {"name": "Отказ (молчание клиента)"}}
     else:
-        props["ЭТАП"] = {"status": {"name": stage_human}}
+        # защита от несуществующих опций статуса (например, "CRM")
+        safe_stage = stage_human if stage_human not in ("CRM", "", None) else "Ручная обработка заказа"
+        props["ЭТАП"] = {"status": {"name": safe_stage}}
 
     # --- ОТКАЗ (multi_select) ----------------------------------------------
     reason = st.get("handover_reason")
@@ -140,8 +143,13 @@ def _build_notion_properties(st: dict) -> dict:
         if human_reason:
             props["ОТКАЗ"] = {"multi_select": [{"name": human_reason[:80]}]}
     # --- Для кого праздник --------------------------------------------------
+    # Берём итоговое значение из state (после апсерта). Для отладки — залогируем.
     celebrant_name = st.get("celebrant_name") or ""
     celebrant_age  = st.get("celebrant_age") or ""
+    try:
+        logger.info("[block6] build props: celebrant_name='%s' celebrant_age='%s'", celebrant_name, celebrant_age)
+    except Exception:
+        pass
     celebrant_line = ""
     if celebrant_name and celebrant_age:
         celebrant_line = f"{celebrant_name}, {celebrant_age} лет"
@@ -153,6 +161,10 @@ def _build_notion_properties(st: dict) -> dict:
         props["Для кого праздник"] = {
             "rich_text": [{"text": {"content": celebrant_line[:200]}}]
         }
+        try:
+            logger.info("[block6] prop 'Для кого праздник' → '%s'", celebrant_line)
+        except Exception:
+            pass
 
     # --- Программа (пакет) --------------------------------------------------
     package = st.get("package")
@@ -179,22 +191,40 @@ def _build_notion_properties(st: dict) -> dict:
     dt_iso = _combine_date_time(date_iso, time_24)
     if dt_iso:
         props["Когда"] = {"date": {"start": dt_iso}}
+        logger.info("[block6] prop 'Когда' → %s (date_iso=%s, time_24=%s)", dt_iso, date_iso, time_24)
 
     # --- адрес --------------------------------------------------------------
-    address = st.get("address")
+    address = (st.get("address") or "").replace('"""','"').replace("''","'")
     if address:
         props["адрес"] = {"rich_text": [{"text": {"content": address[:400]}}]}
+        logger.info("[block6] prop 'адрес' → '%s'", address)
 
     # --- ФОРМАТ -------------------------------------------------------------
-    # Используем event_description как формат
-    event_format = st.get("event_description") or st.get("format")
-    if event_format:
-        props["ФОРМАТ"] = {"multi_select": [{"name": event_format[:80]}]}
+    # Предпочитаем нормализованное поле event_format, иначе берём краткую выжимку из event_description.
+    fmt = st.get("event_format") or (st.get("format") or "")
+    if fmt:
+        props["ФОРМАТ"] = {"multi_select": [{"name": fmt[:80]}]}
 
     # --- ТИП МЕРОПРИЯТИЯ (из show_type) -------------------------------------
     show_type = st.get("show_type")
     if show_type:
         props["ТИП МЕРОПРИЯТИЯ"] = {"multi_select": [{"name": show_type[:80]}]}
+
+    # --- Возраст гостей ------------------------------------------------------
+    # Если шоу детское/семейное → берём guests_children_age,
+    # если взрослое → guests_age. Если тип не распознан — берём что есть.
+    guests_age_adult = st.get("guests_age") or ""
+    guests_age_kids  = st.get("guests_children_age") or ""
+    show_type_lc = (show_type or "").strip().lower()
+    guests_age_line = ""
+    if show_type_lc.startswith("взрос"):
+        guests_age_line = guests_age_adult or ""
+    elif show_type_lc.startswith("дет") or show_type_lc.startswith("сем"):
+        guests_age_line = guests_age_kids or ""
+    else:
+        guests_age_line = guests_age_adult or guests_age_kids or ""
+    if guests_age_line:
+        props["Возраст гостей"] = {"rich_text": [{"text": {"content": guests_age_line[:200]}}]}
 
     # --- предоплата ---------------------------------------------------------
     payment_valid = st.get("payment_valid")
@@ -229,9 +259,14 @@ def _build_notion_properties(st: dict) -> dict:
 # ----------------------------------------------------------------------------
 def retry_export(user_id: str):
     """Внешняя функция — нужна APScheduler для импорта."""
-    from router import route_message
-    route_message("", user_id, force_stage="block6")
-    logger.info(f"[block6] scheduled retry in {RETRY_DELAY_SECONDS}s user={user_id}")
+    # ⚠️ Не трогаем пользователя, если он уже НЕ в block6
+    st = get_state(user_id) or {}
+    if st.get("stage") not in ("block6", None):
+        logger.info(f"[block6] skip retry_export — user left stage (stage={st.get('stage')}) user={user_id}")
+        _cancel_retry_if_any(user_id)
+        return
+    # Повторный вызов настоящей логики экспорта (без force_stage)
+    handle_block6("", user_id, lambda _msg: None)
     
 def _schedule_retry(user_id: str):
     plan(user_id, "blocks.block_06:retry_export", RETRY_DELAY_SECONDS)
@@ -240,9 +275,10 @@ def _cancel_retry_if_any(user_id: str):
     """Безопасно снимаем задачу ретрая, если она была поставлена ранее."""
     try:
         from utils.reminder_engine import remove_job
-        remove_job(f"{user_id}:blocks.block_06:retry_export")
+        # job_id строится в plan() как f"{user}:{norm_path}" с ТОЧКОЙ, не двоеточием
+        remove_job(f"{user_id}:blocks.block_06.retry_export")
     except Exception:
-        pass
+        logger.debug("[block6] _cancel_retry_if_any: nothing to remove for user=%s", user_id)
 
 # Кеш по (auth_key, user_id), чтобы:
 # • повторная попытка для того же юзера делила один инстанс (мок считает fail_times)
@@ -278,6 +314,19 @@ def handle_block6(message_text: str, user_id: str, send_text_func):
         return  # ретраи бессмысленны без ключей
 
     props = _build_notion_properties(st)
+    # точечный снэпшот ключевых пропертей перед отправкой
+    try:
+        preview = {
+            "Name": props.get("Name"),
+            "Для кого праздник": props.get("Для кого праздник"),
+            "Когда": props.get("Когда"),
+            "адрес": props.get("адрес"),
+            "ЭТАП": props.get("ЭТАП"),
+            "ОТКАЗ": props.get("ОТКАЗ"),
+        }
+        logger.info("[block6] Notion props preview: %s", preview)
+    except Exception:
+        pass
     if "Name" not in props:
         logger.error("[block6] No 'Name' property built — abort export")
         update_state(user_id, {"notion_export_error": True})
@@ -337,6 +386,8 @@ def _handle_export_failure(user_id: str, retry_count: int):
             "notion_retry_count": retry_count + 1,
             "last_message_ts": time.time()
         })
+        # НИЧЕГО не планируем далее и снимаем возможный pending-ретрай
+        _cancel_retry_if_any(user_id)
         return
 
     update_state(user_id, {

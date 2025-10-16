@@ -55,11 +55,12 @@ def test_materials_end2end(monkeypatch, tmp_path):
 
     # ---------- Arrange: файлы в S3 ----------
     # PDF КП
-    pdf_key  = "materials/KP/offer.pdf"   # cat_kp → 'adult'
+    pdf_key  = "materials/KP/offer.pdf"   # cat_kp → 'common'
     _put_bytes(pdf_key, b"%PDF-1.4\n% tiny pdf\n", "application/pdf")
 
     # маленькое тест-видео (2 сек) → кладём в materials/video/
-    src_mp4 = tmp_path / "garden_demo.mp4"
+    # имя содержит 'child' → cat_video → 'child'
+    src_mp4 = tmp_path / "child_garden_demo.mp4"
     # делаем короткое видео (быстро собирается)
     cmd = [
         "ffmpeg", "-y",
@@ -71,7 +72,7 @@ def test_materials_end2end(monkeypatch, tmp_path):
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # имя содержит 'garden' → cat_video → 'child_garden'
-    orig_key = "materials/video/garden_demo.mp4"
+    orig_key = "materials/video/child_garden_demo.mp4"
     _upload_file(orig_key, src_mp4, "video/mp4")
 
     # ---------- ffmpeg: сжатие исходников ----------
@@ -100,10 +101,10 @@ def test_materials_end2end(monkeypatch, tmp_path):
     reg = json.loads(reg_obj["Body"].read().decode("utf-8"))
 
     # в реестре есть:
-    # - kp['adult'].media_id == MID_DOCUMENT_FAKE_1
-    # - videos['child_garden'][...] media_id == MID_VIDEO_FAKE_1
-    assert reg["kp"]["adult"]["media_id"] == "MID_DOCUMENT_FAKE_1"
-    vg = reg["videos"]["child_garden"]
+    # - kp['common'].media_id == MID_DOCUMENT_FAKE_1
+    # - videos['child'][...] media_id == MID_VIDEO_FAKE_1
+    assert reg["kp"]["common"]["media_id"] == "MID_DOCUMENT_FAKE_1"
+    vg = reg["videos"]["child"]
     assert isinstance(vg, list) and len(vg) >= 1
     assert vg[-1]["media_id"] == "MID_VIDEO_FAKE_1"
 
@@ -142,9 +143,9 @@ def test_materials_end2end(monkeypatch, tmp_path):
     # Текст
     to = os.getenv("TEST_WA_RECIPIENT", "77050000000")
     wa.send_text(to, ask.ask_openai("сделай подпись"))
-    # Документ (КП adult)
-    wa.send_document(to, reg["kp"]["adult"]["media_id"])
-    # Видео (child_garden)
+    # Документ (КП common)
+    wa.send_document(to, reg["kp"]["common"]["media_id"])
+    # Видео (child)
     wa.send_video(to, vg[-1]["media_id"])
 
     # ---------- Проверки ----------

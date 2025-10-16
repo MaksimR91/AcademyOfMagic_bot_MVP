@@ -137,6 +137,31 @@ if AUTOSTART:
     except Exception as _e:
         log.exception("💥 reminder_engine autostart failed: %s", _e)
 
+# ---------- утилиты для управления задачами -------------------------------
+def remove_job(job_id: str) -> bool:
+    """Безопасно удалить задачу по id. Вернёт True если удалили."""
+    try:
+        sched.remove_job(job_id)
+        log.info("[reminder_engine] removed job %s", job_id)
+        return True
+    except Exception:
+        return False
+
+def cancel_user_jobs(user_id: str, prefix: str | None = None) -> int:
+    """Снести все job'ы пользователя. Если задан prefix — только его."""
+    removed = 0
+    for job in list(sched.get_jobs() or []):
+        jid = str(job.id)
+        if not jid.startswith(f"{user_id}:"):
+            continue
+        if prefix and not jid.startswith(f"{user_id}:{prefix}"):
+            continue
+        if remove_job(jid):
+            removed += 1
+    if removed:
+        log.info("[reminder_engine] cancel_user_jobs(%s, prefix=%s) → %d", user_id, prefix, removed)
+    return removed
+
 # ---------- универсальный планировщик ---------------------------
 #  accepted func_path formats
 #  • "package.module.func"

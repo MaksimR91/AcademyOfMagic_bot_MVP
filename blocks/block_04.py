@@ -33,10 +33,22 @@ def try_send(func, *args, **kwargs):
 
 def choose_kp(show_type: str, registry: dict) -> str | None:
     """
-    КП единое для всех типов — берём kp.common.
+    КП единое для всех типов — целевой ключ kp.common.
+    Поддерживаем старую схему (kp.adult и пр.) для обратной совместимости.
     """
-    kp_info = (registry.get("kp") or {}).get("common")
-    return kp_info.get("media_id") if kp_info else None
+    kp = (registry.get("kp") or {})
+    # новая схема
+    info = kp.get("common")
+    if info and info.get("media_id"):
+        return info["media_id"]
+    # legacy: старая схема могла класть КП в adult или по типам
+    legacy_keys = ("adult", "взрослое", "детское", "семейное")
+    for k in legacy_keys:
+        li = kp.get(k)
+        if li and li.get("media_id"):
+            logger.warning("[block4] kp.common не найден, используем legacy kp.%s", k)
+            return li["media_id"]
+    return None
 
 def choose_video(show_type: str, registry: dict) -> str | None:
     """
@@ -119,19 +131,38 @@ def handle_block4(
         registry   = load_media_registry()
         kp_id      = choose_kp(show_type, registry)
         video_id   = choose_video(show_type, registry)
+        logger.info("[block4] chosen media: kp_id=%r, video_id=%r, show_type=%s", kp_id, video_id, show_type)
 
         if not kp_id and not video_id:
             logger.warning(f"[block4] Не нашли материалов в реестре для show_type={show_type} (kp.common / videos.{ 'child' if show_type in ('детское','семейное') else 'adult'})")
+        kp_ok = False
         if kp_id:
-            try_send(send_document_func, kp_id)   # PDF КП
+            # первая попытка — ЗАПОМИНАЕМ результат
+            kp_ok = try_send(
+                send_document_func,
+                kp_id,
+                filename='КП — Шоу Арсения.pdf'  # или 'offer.pdf'
+            )
+            # если не ок — один мягкий ретрай
+            if not kp_ok:
+                logger.warning("[block4] send_document_func failed for kp_id=%s — will retry once shortly", kp_id)
+                time.sleep(0.5)
+                kp_ok = try_send(
+                    send_document_func,
+                    kp_id,
+                    filename='КП — Шоу Арсения.pdf'
+                )
+        else:
+            logger.warning("[block4] kp.common отсутствует в media_registry — КП не будет отправлено")
         if video_id:
             try_send(send_video_func, video_id)   # пример шоу
 
         # Финальное вежливое сообщение (без ИИ).
-        try_send(
-            send_text_func,
-            "Спасибо! Материалы отправил. Дальше подключится Арсений — он уточнит детали и предложит лучший вариант. ✨"
-        )
+        final_text = "Спасибо! Материалы отправил. Дальше подключится Арсений — он уточнит детали и предложит лучший вариант. ✨"
+        if not kp_ok:
+            final_text = ("Видео отправил. Похоже, с коммерческим предложением возникла задержка — "
+                          "я передам Арсению, чтобы он продублировал КП в чате. ✨")
+        try_send(send_text_func, final_text)
 
         materials_ts = time.time()
         update_state(user_id, {

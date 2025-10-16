@@ -41,6 +41,9 @@ def registry_save(reg):
 def _guess_mime(path: str, mtype: str) -> str:
     # Явно задаём MIME — Graph к этому чувствителен
     # Для document важен корректный application/pdf и т.п.
+    # Супер-страховка: pdf всегда application/pdf
+    if path.lower().endswith(".pdf"):
+        return "application/pdf"
     mime, _ = mimetypes.guess_type(path)
     if mime:
         return mime
@@ -145,7 +148,17 @@ def upload_materials_to_meta_and_update_registry(wa_token: str):
             cat = cat_kp(fname)
 
             prev = reg["kp"].get(cat)
-            if prev and prev["filename"] == fname and prev["last_modified"] == obj["LastModified"].isoformat():
+            # policy: пере-заливаем КП каждые 27 дней (как и видео), даже если файл не менялся
+            need_refresh = True
+            if prev:
+                try:
+                    not_expired = (datetime.strptime(prev["uploaded_at"], "%Y-%m-%d") + timedelta(days=27) > datetime.utcnow())
+                except Exception:
+                    not_expired = False
+                # если не истёк срок и файл не менялся — можно пропустить
+                if not_expired and prev.get("filename") == fname and prev.get("last_modified") == obj["LastModified"].isoformat():
+                    need_refresh = False
+            if not need_refresh:
                 continue
 
             local = os.path.join(tmp, fname)

@@ -442,6 +442,11 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
     if st.get("cancel_block2_reminders"):
         logger.info("[block02:R1] skip: cancel_block2_reminders=True")
         return
+    # идемпотентность: если уже ОТПРАВЛЯЛИ R1 — выходим (должно быть ДО replan)
+    if st.get("r1_sent_b2"):
+        logger.info("[block02:R1] skip: r1_sent_b2 already True")
+        return
+
     # если клиент отвечал после последнего бот-сообщения — не шлём R1
     last_bot_ts  = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
@@ -456,10 +461,6 @@ def send_first_reminder_if_silent(user_id, send_reply_func):
         return
     if last_user_ts > last_bot_ts:
         logger.info("[block02:R1] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
-        return
-    # идемпотентность: если уже ОТПРАВЛЯЛИ R1 — выходим
-    if st.get("r1_sent_b2"):
-        logger.info("[block02:R1] skip: r1_sent_b2 already True")
         return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
@@ -497,6 +498,11 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     if st.get("cancel_block2_reminders"):
         logger.info("[block02:R2] skip: cancel_block2_reminders=True")
         return
+    # идемпотентность: если уже ОТПРАВЛЯЛИ R2 — выходим (должно быть ДО replan)
+    if st.get("r2_sent_b2"):
+        logger.info("[block02:R2] skip: r2_sent_b2 already True")
+        return
+
     # если клиент отвечал после последнего бот-сообщения — не шлём R2
     last_bot_ts  = float(st.get("last_bot_ts") or 0)
     last_user_ts = float(st.get("last_user_ts") or 0)
@@ -506,14 +512,15 @@ def send_second_reminder_if_silent(user_id, send_reply_func):
     if dt + JITTER_SEC < eff_need:
         remaining = max(eff_need - dt, 1.0)
         logger.info("[block02:R2] too early (dt=%.1fs). replan in %.1fs", dt, remaining)
+        # Идемпотентность: если уже ставили реплан — больше не плодим задачи
+        if st.get("r2_scheduled_b2"):
+            logger.info("[block02:R2] skip replan: r2_scheduled_b2 already True")
+            return
         _replan_seconds(user_id, "blocks.block_02:send_second_reminder_if_silent", remaining)
+        state.update_state(user_id, {"r2_scheduled_b2": True})
         return
     if last_user_ts > last_bot_ts:
         logger.info("[block02:R2] skip: last_user_ts > last_bot_ts (%.0f > %.0f)", last_user_ts, last_bot_ts)
-        return
-    # идемпотентность: если уже ОТПРАВЛЯЛИ R2 — выходим
-    if st.get("r2_sent_b2"):
-        logger.info("[block02:R2] skip: r2_sent_b2 already True")
         return
 
     global_prompt = load_prompt(GLOBAL_PROMPT_PATH)
@@ -556,9 +563,8 @@ def finalize_if_still_silent(user_id, send_reply_func):
     eff_need     = _eff_delay_sec(FINAL_TIMEOUT_HOURS)
     dt           = now_ts - last_bot_ts
     if dt + JITTER_SEC < eff_need:
-        remaining = max(eff_need - dt, 1.0)
-        logger.info("[block02:FIN] too early (dt=%.1fs). replan in %.1fs", dt, remaining)
-        _replan_seconds(user_id, "blocks.block_02:finalize_if_still_silent", remaining)
+        # Финал не планирует задачи. Если рано — тихо выходим.
+        logger.info("[block02:FIN] too early — no-op")
         return
     if last_user_ts > last_bot_ts:
         return

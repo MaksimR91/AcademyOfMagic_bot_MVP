@@ -143,7 +143,7 @@ def test_block3a_triggers_handover(monkeypatch, state_store, text):
 
     uid = "u_b3a"
     state_store[uid] = {"stage": "block3"}
-    b3a.handle_block3a(text, uid, lambda _: None, client_request_date=time.time())
+    b3a.handle_block3(text, uid, lambda _: None, client_request_date=time.time())
 
     assert any(c["force_stage"] == "block5" for c in router_calls), "Должен быть хендовер в block5"
     st = state_store[uid]
@@ -160,7 +160,7 @@ def test_block3a_booking_is_not_handover(monkeypatch, state_store):
 
     uid = "u_b3a_book"
     state_store[uid] = {"stage": "block3"}
-    b3a.handle_block3a("Хочу пригласить Арсения на шоу", uid, lambda _: None, client_request_date=time.time())
+    b3a.handle_block3("Хочу пригласить Арсения на шоу", uid, lambda _: None, client_request_date=time.time())
 
     assert not any(c["force_stage"] == "block5" for c in router_calls)
 
@@ -180,9 +180,9 @@ def test_block3b_triggers_handover(monkeypatch, state_store, text):
     uid = "u_b3b"
     state_store[uid] = {"stage": "block3"}
     # сигнатуры 3b и 3a должны совпадать: (message_text, user_id, send_reply_func, client_request_date)
-    b3b.handle_block3b(text, uid, lambda _: None, client_request_date=time.time())
+    b3b.handle_block3(text, uid, lambda _: None, client_request_date=time.time())
 
-    assert any(c["force_stage"] == "block5" for c in router_calls), "3b: должен быть хендовер в block5"
+    assert any(c["force_stage"] == "block5" for c in router_calls), "block3: должен быть хендовер в block5"
     st = state_store[uid]
     assert st.get("handover_reason") == "asked_handover"
     assert st.get("scenario_stage_at_handover") == "block3"
@@ -196,8 +196,8 @@ def test_block3b_booking_is_not_handover(monkeypatch, state_store):
     patch_schedule(monkeypatch, b3b)
     uid = "u_b3b_book"
     state_store[uid] = {"stage": "block3"}
-    b3b.handle_block3b("Хочу заказать Арсения на юбилей", uid, lambda _: None, client_request_date=time.time())
-    assert not any(c["force_stage"] == "block5" for c in router_calls), "3b: booking не должен триггерить хендовер"
+    b3b.handle_block3("Хочу заказать Арсения на юбилей", uid, lambda _: None, client_request_date=time.time())
+    assert not any(c["force_stage"] == "block5" for c in router_calls), "block3: booking не должен триггерить хендовер"
 
 # ─── block3c: хендовер по контактам/цене; без хендовера для booking ───────
 @pytest.mark.parametrize("text", [

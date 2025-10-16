@@ -14,6 +14,8 @@ import gc
 import psutil
 import time
 import threading
+import os, sys
+from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, abort
 from logger import logger
@@ -31,6 +33,19 @@ from utils.incoming_message import handle_message, handle_status
 from utils.cleanup import cleanup_temp_files, start_memory_cleanup_loop, log_memory_usage
 from utils.env_flags import is_local_dev
 from utils import reminder_engine  # ⬅ импортируем модуль, чтобы иметь start()
+import gevent
+from typing import Optional
+
+# ─── Импорт авто-загрузчика материалов ────────────────────────────────────────
+# Гарантируем, что корень проекта попал в sys.path (важно для Pylance/VSCode).
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from utils.upload_materials_to_meta_and_update_registry import main as upload_media_registry
+except Exception:
+    upload_media_registry = None
 
 logger.info("💬 logger test — должен появиться в консоли Render")
 
@@ -150,15 +165,6 @@ def create_app():
     def health():
         return "ok", 200
 
-    # Старт фона — уже после первого запроса (не блокирует импорт/инициализацию)
-      # Старт фона при ПЕРВОМ входящем запросе (замена before_first_request в Flask 3.1)
-    @app.before_request
-    def _kick_bg():
-        if not _startup_once.is_set():
-            _startup_once.set()
-            threading.Thread(target=_bootstrap_background, daemon=True).start()
-
-
     # Конфиг для вебхука (юнит-тесты переопределяют эти ключи у app.config)
     app.config.update(
         VERIFY_TOKEN=VERIFY_TOKEN,
@@ -167,9 +173,35 @@ def create_app():
 
     return app
 
-# Создаём экземпляр через фабрику, чтобы декораторы ниже получили готовый app
+def _run_bootstrap_tasks_once():
+    """
+    Запускает задачи инициализации ровно один раз за жизнь процесса.
+    Не блокирует обработку запроса.
+    """
+    if _startup_once.is_set():
+        return
+    _startup_once.set()
+    # 1) Старт всего «тяжёлого» бандлом — один раз
+    threading.Thread(target=_bootstrap_background, daemon=True).start()
+
+    # 2) Параллельно — автозагрузка медиа (если доступна)
+    if upload_media_registry is not None:
+        logging.getLogger(__name__).info("🚀 Старт фоновой автозагрузки материалов в Meta и сборки media_registry.json")
+        gevent.spawn(
+            upload_media_registry,
+            force_if_missing=True,
+            skip_upload_existing=True,
+        )
+    else:
+        logging.getLogger(__name__).warning("⚠️ upload_media_registry недоступен (импорт не удался) — пропускаем автозагрузку материалов")
+
+# Создаём экземпляр через фабрику
 app = create_app()
-    
+
+# Гарантируем «однократный пинок» при первом реальном запросе
+@app.before_request
+def _kickoff_bootstrap():
+    _run_bootstrap_tasks_once()
 
 if __name__ == '__main__':
     logger.debug("🚀 Запуск Flask-приложения через __main__")

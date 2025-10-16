@@ -50,6 +50,7 @@ def handle_block5(
         # формируем две переменные для шаблона
         try:
             # Одним вызовом: сам разрежет и пошлёт несколько template-частей
+            logger.info("[block5] sending owner resume (len=%d): %s", len(summary), summary.replace("\n"," | "))
             wa_resps = send_owner_resume(summary)   # list[requests.Response]
             statuses = [getattr(r, "status_code", "?") for r in wa_resps]
             logger.info("[block5] resume WA-status=%s user=%s", statuses, user_id)
@@ -89,10 +90,16 @@ def handle_block5(
 
 # ---------------------------------------------------------------------------
 def _pick(snap, st, key, default=""):
-    # сначала из снепшота, если есть и непусто; иначе из state
+    """
+    По умолчанию раньше брали из structured_cache → потом из state.
+    Но после апсерта state содержит более актуальные склейки (например, "Жених ... невеста ...").
+    Разворачиваем приоритет: сперва state, затем снапшот.
+    """
+    if str(st.get(key, "")).strip():
+        return st.get(key)
     if snap and str(snap.get(key, "")).strip():
-        return snap[key]
-    return st.get(key, default)
+        return snap.get(key)
+    return default
 
 def _build_summary(st: dict, comment: str) -> str:
     snap = st.get("structured_cache") or {}
@@ -138,20 +145,50 @@ def _build_summary(st: dict, comment: str) -> str:
     elif raw_children:
         children_client = str(raw_children)
 
+    celebrant_name   = _pick(snap, st, "celebrant_name")
+    celebrant_age    = _pick(snap, st, "celebrant_age")
+    guests_count     = _pick(snap, st, "guests_count")
+    guests_age_adult = _pick(snap, st, "guests_age")               # для взрослого шоу
+    guests_age_kids  = _pick(snap, st, "guests_children_age")      # для детского/семейного шоу
+    # выбор источника возраста гостей по типу шоу
+    show_type_lc = (st.get("show_type") or "").strip().lower()
+    guests_age_line = ""
+    if show_type_lc.startswith("взрос"):
+        guests_age_line = guests_age_adult or ""
+    elif show_type_lc.startswith("дет") or show_type_lc.startswith("сем"):
+        guests_age_line = guests_age_kids or ""
+    else:
+        # если тип не распознан — берём что-то одно, что есть
+        guests_age_line = guests_age_adult or guests_age_kids or ""
+
+    # логируем ключевые поля до сборки резюме
+    try:
+        logger.info("[block5] summary fields user=%s date_time='%s' address='%s' celebrant_name='%s' celebrant_age='%s' guests_count='%s'",
+                    st.get("user_id") or "?", date_time, st.get("address",""),
+                    celebrant_name, celebrant_age, guests_count)
+    except Exception:
+        pass
+
+    # лёгкая нормализация кавычек в адресе для резюме
+    addr = (st.get("address","") or "").replace('"""','"').replace("''","'")
+    # формируем аккуратный формат мероприятия:
+    # 1) нормализованный event_format из structured_cache/state,
+    # 2) иначе fallback: короткая выжимка из event_description (до первого перевода строки/точки).
+    fmt = _pick(snap, st, "event_format") or (st.get("format") or "")
     lines = [
         "📄 *Резюме для Арсения*",
         f"Этап сценария: {st.get('stage','')}",
         f"Имя клиента: {st.get('client_name','')}",
         f"Телефон клиента: {phone}",
         f"Тип шоу: {st.get('show_type','')}",
-        f"Формат мероприятия: {st.get('event_description','')}",
+        f"Формат мероприятия: {fmt}",
         f"Выбранный пакет: {st.get('package','')}",
         f"Дата, время: {date_time}",
-        f"Адрес: {st.get('address','')}",
-        f"Имя виновника торжества: {_pick(snap, st, 'celebrant_name')}",
-        f"Возраст виновника: {_pick(snap, st, 'celebrant_age')}",
-        f"Количество гостей: {_pick(snap, st, 'guests_count')}",
-        f"Пол гостей: {st.get('guests_gender','')}",
+        f"Адрес: {addr}",
+        f"Имя виновника торжества: {celebrant_name}",
+        f"Возраст виновника: {celebrant_age}",
+        f"Количество гостей: {guests_count}",
+        f"Возраст гостей: {guests_age_line}",
         f"Внесена ли предоплата: " + (_yes_no(st.get('payment_valid')) if 'payment_valid' in st else ""),
         f"Сумма предоплаты (тенге): {st.get('payment_amount','')}",
         f"Будут ли дети клиента: " + (_yes_no(st.get('client_children_attend')) if isinstance(st.get('client_children_attend'), bool) else str(st.get('client_children_attend') or "")),
