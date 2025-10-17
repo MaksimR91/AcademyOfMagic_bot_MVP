@@ -208,32 +208,40 @@ def _route_message_impl(
     if last_sender == "user":
         # если уже ждём подтверждения языка — обрабатываем ответ
         if state.get("lang_check_pending"):
-            lang = state.get("detected_lang", "en")
-            # короткие эвристики "да/нет" на языке клиента (+EN как fallback)
-            if is_affirmative(message_text, lang):
+            # 0) если сам ответ пришёл на русском — считаем подтверждением и продолжаем сценарий
+            if is_russian(message_text):
                 update_state(user_id, {
                     "lang_check_pending": False,
                     "lang_confirmed": True,
                 })
                 logger.info(f"[router] lang confirmed → RU by user={user_id}")
-            elif is_negative(message_text, lang):
-                # отказ → хендовер владельцу (причина: lang_declined)
-                update_state(user_id, {
-                    "handover_reason": "lang_declined",
-                    "stage": "block5",  # бывший block9
-                })
-                try:
-                    send_text(_current_wa_to(), "Передаю диалог Арсению. Спасибо!")
-                except Exception:
-                    pass
-                return _response(user_id)
             else:
-                # непонятный ответ — повторяем двуязычное сообщение один раз
-                try:
-                    send_text(_current_wa_to(), build_lang_switch_message(lang))
-                except Exception:
-                    pass
-                return _response(user_id)
+                lang = state.get("detected_lang", "en")
+                # короткие эвристики "да/нет" на языке клиента (+EN/RU как fallback)
+                if is_affirmative(message_text, lang):
+                    update_state(user_id, {
+                        "lang_check_pending": False,
+                        "lang_confirmed": True,
+                    })
+                    logger.info(f"[router] lang confirmed (heuristics) → RU by user={user_id}")
+                elif is_negative(message_text, lang):
+                    # отказ → хендовер владельцу (причина: lang_declined)
+                    update_state(user_id, {
+                        "handover_reason": "lang_declined",
+                        "stage": "block5",  # бывший block9
+                    })
+                    try:
+                        send_text(_current_wa_to(), "Передаю диалог Арсению. Спасибо!")
+                    except Exception:
+                        pass
+                    return _response(user_id)
+                else:
+                    # непонятный ответ — повторяем двуязычное сообщение
+                    try:
+                        send_text(_current_wa_to(), build_lang_switch_message(lang))
+                    except Exception:
+                        pass
+                    return _response(user_id)
         else:
             # первая проверка: если текст не на русском — попросим перейти на RU
             if not is_russian(message_text):

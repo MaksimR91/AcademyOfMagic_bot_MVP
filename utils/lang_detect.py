@@ -63,8 +63,16 @@ NO_WORDS = {
 
 def is_affirmative(text: str, lang: str) -> bool:
     t = (text or "").strip().lower()
-    return any(w in t for w in YES_WORDS.get(lang, set()) | YES_WORDS["en"])
+    bags = set()
+    bags |= YES_WORDS.get("ru", set())
+    bags |= YES_WORDS.get("en", set())
+    bags |= YES_WORDS.get(lang, set())
+    return any(w in t for w in bags)
 
 def is_negative(text: str, lang: str) -> bool:
     t = (text or "").strip().lower()
-    return any(w in t for w in NO_WORDS.get(lang, set()) | NO_WORDS["en"])
+    bags = set()
+    bags |= NO_WORDS.get("ru", set())
+    bags |= NO_WORDS.get("en", set())
+    bags |= NO_WORDS.get(lang, set())
+    return any(w in t for w in bags)
