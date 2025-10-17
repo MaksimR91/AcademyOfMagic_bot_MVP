@@ -284,7 +284,14 @@ def _guess_place_local(s: str) -> str|None:
 def _quick_extract_fields_from_user_text(text: str) -> dict:
     if not text: return {}
     out = {}
-    # ИМЯ НЕ ПАРСИМ регекспами — отдаём это ИИ/доспрашиванию.
+    # Имя: аккуратно парсим только паттерн «зовут ...» (до двух слов), остальное по-прежнему отдаём ИИ/доспрашиванию.
+    m_name = re.search(r"\bзовут\s+([A-Za-zА-Яа-яЁё\-']+)(?:\s+([A-Za-zА-Яа-яЁё\-']+))?", text, re.IGNORECASE)
+    if m_name:
+        raw_parts = [p for p in m_name.groups() if p]
+        candidate = " ".join(raw_parts).strip()
+        # страхуемся от мусора (День/Рождения/и т.п.) и «трёхсловок»
+        if _is_probable_name(candidate):
+            out["celebrant_name"] = normalize_proper_name(candidate)
     # гости
     m = re.search(r'(?:гостей|человек)\s*(?:≈|~|=|:)?\s*(\d{1,3})', text, re.IGNORECASE)
     if m:

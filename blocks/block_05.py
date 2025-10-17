@@ -163,14 +163,16 @@ def _build_summary(st: dict, comment: str) -> str:
 
     # логируем ключевые поля до сборки резюме
     try:
-        logger.info("[block5] summary fields user=%s date_time='%s' address='%s' celebrant_name='%s' celebrant_age='%s' guests_count='%s'",
-                    st.get("user_id") or "?", date_time, st.get("address",""),
+        logger.info("[block5] summary fields user=%s date_time='%s' event_location='%s' celebrant_name='%s' celebrant_age='%s' guests_count='%s'",
+                    st.get("user_id") or "?", date_time, ( _pick(snap, st, "event_location") or st.get("event_location","") ),
                     celebrant_name, celebrant_age, guests_count)
     except Exception:
         pass
 
     # лёгкая нормализация кавычек в адресе для резюме
-    addr = (st.get("address","") or "").replace('"""','"').replace("''","'")
+    # Берём именно event_location (может содержать и место, и адрес), приоритет: state → structured_cache
+    event_loc = _pick(snap, st, "event_location") or (st.get("event_location") or "")
+    event_loc = str(event_loc).replace('"""','"').replace("''","'")
     # формируем аккуратный формат мероприятия:
     # 1) нормализованный event_format из structured_cache/state,
     # 2) иначе fallback: короткая выжимка из event_description (до первого перевода строки/точки).
@@ -184,7 +186,7 @@ def _build_summary(st: dict, comment: str) -> str:
         f"Формат мероприятия: {fmt}",
         f"Выбранный пакет: {st.get('package','')}",
         f"Дата, время: {date_time}",
-        f"Адрес: {addr}",
+        f"Адрес: {event_loc}",
         f"Имя виновника торжества: {celebrant_name}",
         f"Возраст виновника: {celebrant_age}",
         f"Количество гостей: {guests_count}",
