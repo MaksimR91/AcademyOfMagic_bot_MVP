@@ -239,6 +239,30 @@ STOP_NAME_TOKENS = {
     "День","Рождения","Праздник","Юбилей","Сын","Дочь","Ребёнок","Ребенок","Пати","Праздуха","DR","ДР"
 }
 
+# ── helpers для оценки «генеричности»/«конкретности» локации -----------------
+_GENERIC_LOCATION_TOKENS = {
+    "дом","квартира","детский сад","школа","ресторан","кафе","трц","тц","бар","клуб","зал","лофт","сад"
+}
+
+def _is_generic_location_token(s: str) -> bool:
+    if not s: 
+        return False
+    low = str(s).strip().lower()
+    return low in _GENERIC_LOCATION_TOKENS
+
+def _looks_specific_location(s: str) -> bool:
+    """
+    Признаки «конкретного» места:
+      • есть кавычки с названием, или
+      • после типа идёт ещё хотя бы одно слово/название.
+    """
+    if not s:
+        return False
+    s2 = str(s).strip()
+    if any(q in s2 for q in ['«','»','"']):
+        return True
+    return bool(re.match(r'^(кафе|ресторан|трц|тц|бар|клуб|школа|сад|детский сад|дом|квартира)\s+\S+', s2, re.IGNORECASE))
+
 def _norm_date_local(s: str) -> str|None:
     m = _DATE.search(s)
     if not m: return None
@@ -349,8 +373,15 @@ def upsert_state_safe(user_id: str, parsed: dict) -> dict:
         v = _clean_value(v)
         if v is None:
             continue
+        # Обычный случай: поле пустое — пишем
         if (st.get(k) in (None, "",) or st.get(k) in SENTINELS):
             changed[k] = v
+            continue
+        # Спец-правило: event_location можно «апгрейдить» с генерика на конкретику
+        if k == "event_location":
+            cur = st.get(k)
+            if _is_generic_location_token(cur) and not _is_generic_location_token(v) and _looks_specific_location(v):
+                changed[k] = v
     if changed:
         update_state(user_id, changed)
     return get_state(user_id)
