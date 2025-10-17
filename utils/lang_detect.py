@@ -27,9 +27,14 @@ def is_russian(text: str) -> bool:
     # если явно присутствуют не-русские кириллические буквы — это не русский
     if any(ch in NON_RU_CYR for ch in low):
         return False
-    # если кириллица есть, латиницы нет и нет «не-русских» букв — считаем русским
-    if has_cyr and not has_lat:
-        return True
+    # если доля русской кириллицы среди всех букв ≥ 20% — считаем русским
+    # считаем только буквенные символы, цифры/знаки препинания игнорируем
+    letters = [ch for ch in low if ch.isalpha()]
+    if letters:
+        ru_cyr_cnt = sum(1 for ch in letters if ch in RUSSIAN_CYR or ch == "ё")
+        ratio = ru_cyr_cnt / len(letters)
+        if ratio >= 0.20:
+            return True
     # fallback к детектору
     lang = detect_lang(t)
     if lang in RU_CODES:
