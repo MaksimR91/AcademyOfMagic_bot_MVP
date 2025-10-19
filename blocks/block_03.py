@@ -64,7 +64,8 @@ SAFE_KEYS = {
     "event_date", "event_time", "event_location",
     "celebrant_name", "celebrant_gender", "celebrant_age",
     "guests_count", "guests_age",
-    "guests_children_gender", "children_adult_ratio",
+    "guests_children_age", "guests_children_gender",
+    "children_adult_ratio",
     "compere_availability", "no_celebrant",
     # унификации даты/времени:
     "event_date_iso", "event_time_24"
@@ -77,6 +78,14 @@ def _clean_value(v):
     if isinstance(v, str) and v.strip().lower() in SENTINELS:
         return None
     return v
+
+# ── helpers: определение «диапазона» и нормализация строки возраста детей ----
+_RE_AGE_RANGE_ANY = re.compile(r"\b(\d{1,2})\s*[-–—]\s*(\d{1,2})\b")
+_RE_CHILD_SIMPLE_NEAR = re.compile(r"дет[^\n\r]{0,20}?(\d{1,2})\s*(?:лет|год(?:а|ов)?)\b", re.IGNORECASE)
+
+def _fmt_age_range(a: int, b: int) -> str:
+    lo, hi = sorted([int(a), int(b)])
+    return f"от {lo} до {hi} лет"
 
 # Требуемые поля по типу (минимум для расчёта цены и программы)
 REQUIRED_BY_TYPE = {
@@ -239,6 +248,25 @@ STOP_NAME_TOKENS = {
     "День","Рождения","Праздник","Юбилей","Сын","Дочь","Ребёнок","Ребенок","Пати","Праздуха","DR","ДР"
 }
 
+# ── адреса (улицы/проспекты и т.п.) ------------------------------------------
+# Примеры матчей: "пр. Ауэзова 22", "ул. Ленина 10", "бульвар Мира 15", "пер. Садовый 3"
+ADDRESS_TOKEN_RE = re.compile(
+    r'\b('
+    r'ул\.|улица|пр\.|проспект|пр\-?т|просп\.|пер\.|переулок|бульвар|бул\.|'
+    r'наб\.|набережная|мкр\.|микрорайон|пл\.|площадь|туп\.|тупик|шоссе|ш\.'
+    r')\s+[A-Za-zА-Яа-яЁё0-9.\- ]+?\s+\d{1,4}\b',
+    re.IGNORECASE
+)
+
+def _extract_address_chunk(text: str) -> str | None:
+    if not text:
+        return None
+    m = ADDRESS_TOKEN_RE.search(text)
+    if not m:
+        return None
+    # вернём адрес ровно как в исходном тексте (без изменения регистра/кавычек)
+    return m.group(0).strip()
+
 # ── helpers для оценки «генеричности»/«конкретности» локации -----------------
 _GENERIC_LOCATION_TOKENS = {
     "дом","квартира","детский сад","школа","ресторан","кафе","трц","тц","бар","клуб","зал","лофт","сад"
@@ -254,14 +282,17 @@ def _looks_specific_location(s: str) -> bool:
     """
     Признаки «конкретного» места:
       • есть кавычки с названием, или
-      • после типа идёт ещё хотя бы одно слово/название.
+      • после типа идёт ещё хотя бы одно слово/название (допускаем запятую), или
+      • выглядит как адрес улицы с номером.
     """
     if not s:
         return False
     s2 = str(s).strip()
     if any(q in s2 for q in ['«','»','"']):
         return True
-    return bool(re.match(r'^(кафе|ресторан|трц|тц|бар|клуб|школа|сад|детский сад|дом|квартира)\s+\S+', s2, re.IGNORECASE))
+    if _extract_address_chunk(s2):
+        return True
+    return bool(re.match(r'^(кафе|ресторан|трц|тц|бар|клуб|школа|сад|детский сад|дом|квартира)[\s,]+\S+', s2, re.IGNORECASE))
 
 def _norm_date_local(s: str) -> str|None:
     m = _DATE.search(s)
@@ -295,19 +326,42 @@ def _guess_place_local(s: str) -> str|None:
         if idx >= 0:
             # возьмём хвост после хинта и попробуем вытянуть «"Парус"» или слово
             tail = s[idx+len(h):]
+            # 0) если после типа места идёт запятая/двоеточие/тире — удалим их и пробелы
+            tail_clean = re.sub(r'^[\s,:–—\-]+', '', tail)
+            # 1) если в хвосте есть адрес — возвращаем «тип, адрес»
+            addr = _extract_address_chunk(tail_clean)
+            if addr:
+                return f'{s[idx:idx+len(h)]}, {addr}'.strip()
             m_q = re.search(r'[«"]\s*([A-Za-zА-Яа-яЁё0-9 \-]+)\s*[»"]', tail)
             if m_q:
                 return f'{s[idx:idx+len(h)]} "{m_q.group(1).strip()}"'
             # fallback — одно-два слова после хинта
-            m_w = re.search(r"\s+([A-Za-zА-Яа-яЁё0-9\-]+(?:\s+[A-Za-zА-Яа-яЁё0-9\-]+)?)", tail)
-            if m_w:
-                return f'{s[idx:idx+len(h)]} {m_w.group(1).strip()}'
+            # Раньше мы брали 1–2 слова — этого мало для адресов. Возьмём всё до конца.
+            tail_fallback = tail_clean.strip()
+            if tail_fallback:
+                return f'{s[idx:idx+len(h)]} {tail_fallback}'.strip()
             return s[idx:idx+len(h)]
     return None
 
 def _quick_extract_fields_from_user_text(text: str) -> dict:
     if not text: return {}
     out = {}
+    low = text.lower()
+    # заранее вытащим «детский» контекст, чтобы не перепутать с celebrant_age
+    has_children_context = ("дет" in low)
+    # ── (НОВОЕ) Пытаемся вытащить «голый» адрес, даже если не назвали тип места
+    addr_only = _extract_address_chunk(text)
+    if addr_only:
+        # Если пользователь указал «дом/квартира, <адрес>» — сохраним вместе с префиксом.
+        # Если в исходном сообщении есть явный префикс «дом/квартира», добавим его.
+        if re.search(r'\bдом\b', low):
+            out["event_location"] = f"дом, {addr_only}"
+        elif re.search(r'\bквартир[аеи]\b', low):
+            out["event_location"] = f"квартира, {addr_only}"
+        else:
+            out["event_location"] = addr_only
+        # адрес нашли — дальнейший generic-поиск места не нужен
+        # но остальные поля (дата/время/имя и т.п.) продолжаем искать
     # Имя: аккуратно парсим только паттерн «зовут ...» (до двух слов), остальное по-прежнему отдаём ИИ/доспрашиванию.
     m_name = re.search(r"\bзовут\s+([A-Za-zА-Яа-яЁё\-']+)(?:\s+([A-Za-zА-Яа-яЁё\-']+))?", text, re.IGNORECASE)
     if m_name:
@@ -324,23 +378,54 @@ def _quick_extract_fields_from_user_text(text: str) -> dict:
     if (d := _norm_date_local(text)): out["event_date"] = d
     if (t := _norm_time_local(text)): out["event_time"] = t
     # место
-    m = RE_LOCATION_QUOTED.search(text)
+    # Если ранее уже выставили адрес — пытаться дополнительно извлекать generic-локализацию не будем,
+    # чтобы не перетёреть точный адрес.
+    m = None if out.get("event_location") else RE_LOCATION_QUOTED.search(text)
     if m:
         title = m.group(1).strip().replace('«','"').replace('»','"')
         kind = re.search(r'(кафе|ресторан|ТРЦ|бар|клуб|школа|сад|дет(?:ский)? сад|дом|квартира)', text, re.IGNORECASE)
         prefix = kind.group(1).lower() if kind else "место"
         out["event_location"] = f'{prefix} "{title}"'
     else:
-        if (p := _guess_place_local(text)):
+        if not out.get("event_location") and (p := _guess_place_local(text)):
             out["event_location"] = p
         else:
-            m = RE_LOCATION_GENERIC.search(text)
-            if m: out["event_location"] = m.group(0).lower()
-    # возраст/аудитория
-    if (m := _AGE.search(text)):  out["celebrant_age"] = int(m.group(1))
-    if (m := _CNT.search(text)):  out["guests_count"]  = out.get("guests_count") or int(m.group(1))
+            if not out.get("event_location"):
+                m = RE_LOCATION_GENERIC.search(text)
+                if m: out["event_location"] = m.group(0).lower()
+    # ── аудитория / количество
+    if (m := _CNT.search(text)):  out["guests_count"] = out.get("guests_count") or int(m.group(1))
+
+    # ── возраст гостей-детей (приоритетнее, чем celebrant_age — чтобы «дети 10 лет»
+    #     не перетекали в возраст именинника)
+    # Диапазон вида «от 8 до 12 лет»
+    m_range = re.search(r"\bот\s*(\d{1,2})\s*(?:лет|год(?:а|ов)?)?\s*до\s*(\d{1,2})\s*(?:лет|год(?:а|ов)?)\b", text, re.IGNORECASE)
+    # «около 10 лет», «по 10 лет», «примерно 10 лет» и т.п.
+    m_about = re.search(r"\b(около|примерно|где-то|по)\s*(\d{1,2})\s*(?:лет|год(?:а|ов)?)\b", text, re.IGNORECASE)
+    # Простая форма «дети 10 лет», «детям 9» и т.д. — ищем рядом с «дет»
+    m_child_simple = _RE_CHILD_SIMPLE_NEAR.search(text)
+    # Диапазон вида «8-12», «8–12», «8 — 12» (с/без слова «лет»)
+    m_dash_range = _RE_AGE_RANGE_ANY.search(text)
+
+    if has_children_context:
+        if m_range:  # «от A до B»
+            a, b = m_range.groups()
+            out["guests_children_age"] = f"от {int(a)} до {int(b)} лет"
+            out["guests_children_age"] = _fmt_age_range(a, b)
+        elif m_dash_range:  # «A-В»
+            a, b = m_dash_range.groups()
+            out["guests_children_age"] = _fmt_age_range(a, b)
+        elif m_about:
+            out["guests_children_age"] = f"около {int(m_about.group(2))} лет"
+        elif m_child_simple:
+            out["guests_children_age"] = f"{int(m_child_simple.group(1))} лет"
+
+    # ── возраст именинника (только если не похоже, что речь про «детей»)
+    if not has_children_context:
+        if (m := _AGE.search(text)):
+            out["celebrant_age"] = int(m.group(1))
+
     # грубые подсказки по аудитории
-    low = text.lower()
     if "дет" in low: out["guests_age"] = "дети"
     if "взросл" in low: out["guests_age"] = "взрослые"
     return out
@@ -375,6 +460,9 @@ def upsert_state_safe(user_id: str, parsed: dict) -> dict:
             continue
         # Обычный случай: поле пустое — пишем
         if (st.get(k) in (None, "",) or st.get(k) in SENTINELS):
+            # Спец-нормализация guests_children_age (диапазоны)
+            if k == "guests_children_age" and isinstance(v, str):
+                v = _normalize_children_age_value(v)
             changed[k] = v
             continue
         # Спец-правило: event_location можно «апгрейдить» с генерика на конкретику
@@ -382,6 +470,15 @@ def upsert_state_safe(user_id: str, parsed: dict) -> dict:
             cur = st.get(k)
             if _is_generic_location_token(cur) and not _is_generic_location_token(v) and _looks_specific_location(v):
                 changed[k] = v
+         # Спец-правило: guests_children_age — апгрейд одиночного значения до диапазона
+        if k == "guests_children_age" and isinstance(v, str):
+            cur = str(st.get(k) or "").strip()
+            new_norm = _normalize_children_age_value(v)
+            # если текущее — одно число или «около N», а новое — диапазон → апгрейдим
+            is_cur_single = bool(re.fullmatch(r"(?:около\s*)?\d{1,2}\s*(?:лет|год(?:а|ов)?)?", cur, flags=re.IGNORECASE))
+            is_new_range = bool(new_norm and re.search(r"\bот\s*\d{1,2}\s*до\s*\d{1,2}\b", new_norm))
+            if is_new_range and is_cur_single and new_norm != cur:
+                changed[k] = new_norm
     if changed:
         update_state(user_id, changed)
     return get_state(user_id)
@@ -600,6 +697,36 @@ def upsert_state(user_id: str, parsed: dict):
 # ──────────────────────────────────────────────────────────────────────────────
 # Fallback-парсер (regex union), если модель выдала не-JSON
 # ──────────────────────────────────────────────────────────────────────────────
+def _normalize_children_age_value(val: str | None) -> str | None:
+    """Нормализует guests_children_age:
+       - '8-12', '8 – 12', '8 — 12', '8-12 лет' → 'от 8 до 12 лет'
+       - 'от 8 до 12' → 'от 8 до 12 лет'
+       - оставляет одиночные значения/«около 10 лет» как есть.
+    """
+    if not val:
+        return val
+    s = str(val).strip()
+    if not s:
+        return s
+    # A-B
+    m = _RE_AGE_RANGE_ANY.search(s)
+    if m:
+        return _fmt_age_range(m.group(1), m.group(2))
+    # от A до B
+    m2 = re.search(r"\bот\s*(\d{1,2})\s*до\s*(\d{1,2})\b", s, re.IGNORECASE)
+    if m2:
+        return _fmt_age_range(m2.group(1), m2.group(2))
+    # если одиночное число — не трогаем
+    return s
+
+def normalize_children_age(state: dict):
+    if not state:
+        return
+    val = state.get("guests_children_age")
+    norm = _normalize_children_age_value(val)
+    if norm and norm != val:
+        state["guests_children_age"] = norm
+
 def parse_structured_pairs(text: str) -> dict:
     flags = re.IGNORECASE | re.MULTILINE
     def grab(pat):
@@ -647,18 +774,164 @@ def _clean_date(raw_date: str) -> str:
     m = re.search(r"\b\d{4}-\d{2}-\d{2}\b", s)
     return m.group(0) if m else ""
 
+# ── умные чистилки даты/времени для пост-обработки ответа LLM ---------------
+_PART_OF_DAY = {
+    "утра": 0, "утро": 0, "morning": 0,
+    "дня": 12, "day": 12, "день": 12,
+    "вечера": 12, "вечер": 12, "evening": 12, "pm": 12,
+    "ночи": -12, "ночь": -12, "night": -12
+}
+
+def _clean_time_smart(raw_time: str) -> str:
+    """
+    Принимает «любое» время из LLM/пользователя и пытается вернуть HH:MM.
+    Понимает: `8ч`, `8 часов`, `8 вечера`, `20.00`, `20 00`, `8 pm`, `полдень`, `полночь`,
+    а также словесные формы через dateparser.
+    """
+    if not raw_time:
+        return ""
+    s_orig = str(raw_time).strip().lower()
+    # быстрые кейсы
+    # 1) классика HH:MM (наша старая строгая)
+    t = _clean_time(s_orig)
+    if t:
+        return t
+    # 2) точки/пробел → считаем временем (только для standalone времени, безопасно)
+    m = re.search(r"\b([01]?\d|2[0-3])[\. ]([0-5]\d)\b", s_orig)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+        return f"{hh:02d}:{mm:02d}"
+    # 3) «8ч», «8 часов», «8 ч вечера/утра/дня/ночи»
+    m = re.search(r"\b([01]?\d|2[0-3])\s*(?:ч|час(?:а|ов)?)\b(?:\s*(утра|утро|дня|день|вечера|вечер|ночи|ночь|pm|evening|morning|night))?", s_orig)
+    if m:
+        hh = int(m.group(1))
+        pod = m.group(2) or ""
+        if pod:
+            shift = _PART_OF_DAY.get(pod, 0)
+            # «ночи»: 1–5 ночи → 01–05; если указано 10 ночи → 22
+            if shift == -12:
+                if 1 <= hh <= 5:
+                    pass  # 01:00…05:00 — ок
+                else:
+                    hh = (hh + 12) % 24
+            else:
+                # для «вечера/pm» добавляем 12ч, кроме 12
+                if shift == 12 and hh < 12:
+                    hh += 12
+        return f"{hh:02d}:00"
+    # 4) «8 вечера/утра/…» без «ч»
+    m = re.search(r"\b([01]?\d|2[0-3])\b\s*(утра|утро|дня|день|вечера|вечер|ночи|ночь|pm|evening|morning|night)", s_orig)
+    if m:
+        hh = int(m.group(1)); pod = m.group(2)
+        shift = _PART_OF_DAY.get(pod, 0)
+        if shift == -12:
+            if 1 <= hh <= 5:
+                pass
+            else:
+                hh = (hh + 12) % 24
+        elif shift == 12 and hh < 12:
+            hh += 12
+        return f"{hh:02d}:00"
+    # 5) «полдень» / «полночь»
+    if "полдень" in s_orig:
+        return "12:00"
+    if "полночь" in s_orig:
+        return "00:00"
+    # 6) AM/PM (англ.)
+    m = re.search(r"\b([1-9]|1[0-2])\s*(am|pm)\b", s_orig)
+    if m:
+        hh = int(m.group(1)); ap = m.group(2)
+        if ap == "pm" and hh < 12:
+            hh += 12
+        if ap == "am" and hh == 12:
+            hh = 0
+        return f"{hh:02d}:00"
+    # 7) последний шанс — dateparser (только время)
+    try:
+        dtp = dateparser.parse(s_orig, languages=["ru", "en"], settings={
+            "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": datetime.now(_TZ),
+            "DATE_ORDER": "DMY",
+            "STRICT_PARSING": False
+        })
+        if dtp:
+            return dtp.strftime("%H:%M")
+    except Exception:
+        pass
+    return ""
+
+def _clean_date_smart(raw_date: str, *, fallback_year: int | None = None) -> str:
+    """
+    Принимает «любую» дату и возвращает ГГГГ-ММ-ДД.
+    Понимает «5 ноября», «05/11/2025», «5.11», словесные месяцы и пр.
+    Если указан только день-месяц — подставляем fallback_year (если задан).
+    """
+    if not raw_date:
+        return ""
+    # сначала — строгая ГГГГ-ММ-ДД
+    d = _clean_date(raw_date)
+    if d:
+        return d
+    s = str(raw_date).strip()
+    # «5.11» / «5-11» с подстановкой года
+    m = re.fullmatch(r"\s*(\d{1,2})[.\-\/](\d{1,2})\s*", s)
+    if m and fallback_year:
+        dd, mm = int(m.group(1)), int(m.group(2))
+        if 1 <= dd <= 31 and 1 <= mm <= 12:
+            return f"{fallback_year:04d}-{mm:02d}-{dd:02d}"
+    # dateparser на словесные формы
+    try:
+        dtp = dateparser.parse(s, languages=["ru"], settings={
+            "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": datetime.now(_TZ),
+            "DATE_ORDER": "DMY",
+            "STRICT_PARSING": False
+        })
+        if dtp:
+            # если год отсутствовал и есть fallback_year — форсируем его
+            if fallback_year and (raw_date.lower().find("20") == -1) and (dtp.year != fallback_year):
+                dtp = dtp.replace(year=fallback_year)
+            return dtp.date().isoformat()
+    except Exception:
+        pass
+    return ""
+
 # ── нормализация места (приводим к виду: тип "Название") --------------------
 def normalize_location(state: dict):
     loc = state.get("event_location")
     if not loc:
         return
     loc2 = str(loc)
+    # 1) сначала нормализуем типографику кавычек
     if '«' in loc2 or '»' in loc2:
         loc2 = loc2.replace('«','"').replace('»','"')
+    # 2) если это «голый» адрес или «дом/квартира, адрес» — оставляем адрес как есть (БЕЗ кавычек)
+    addr = _extract_address_chunk(loc2)
+    if addr:
+        # если есть явный префикс "дом"/"квартира" — приведём к "дом, <адрес>" / "квартира, <адрес>"
+        if re.match(r'^\s*дом\b', loc2, re.IGNORECASE):
+            loc2 = f'дом, {addr}'
+        elif re.match(r'^\s*квартир[аеи]\b', loc2, re.IGNORECASE):
+            loc2 = f'квартира, {addr}'
+        else:
+            loc2 = addr
     else:
-        m = re.match(r'(кафе|ресторан|трц|бар|клуб|школа|сад|детский сад|дом|квартира)\s+(.+)', loc2, re.IGNORECASE)
+        # 3) формат «тип + название»: добавляем кавычки только для «названий», не для адресов
+        m = re.match(r'(кафе|ресторан|трц|бар|клуб|школа|сад|детский сад|дом|квартира)[\s,]+(.+)', loc2, re.IGNORECASE)
         if m:
-            loc2 = f'{m.group(1).lower()} "{m.group(2).strip()}"'
+            tail = m.group(2).strip()
+            # если хвост выглядит как адрес — не quoting, а "дом, адрес"/"квартира, адрес"
+            addr2 = _extract_address_chunk(tail)
+            if addr2 and m.group(1).lower() in {"дом","квартира"}:
+                loc2 = f'{m.group(1).lower()}, {addr2}'
+            elif addr2:
+                loc2 = addr2
+            else:
+                loc2 = f'{m.group(1).lower()} "{tail}"'
+    # убрать возможные тройные/двойные кавычки типа """Парус"""
+    loc2 = re.sub(r'"{2,}', '"', loc2)
+    # если получилось тип "Название"" (две пары), привести к одной паре
+    loc2 = re.sub(r'"\s*([^"]*?)\s*"\s*"', r'"\1"', loc2)
     if loc2 != loc:
         state["event_location"] = loc2
 
@@ -750,9 +1023,15 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
             tmp = get_state(user_id) or {}
             normalize_location(tmp)
             normalize_datetime(tmp)
-            if tmp:
-                update_state(user_id, tmp)
-            st = get_state(user_id) or {}
+            normalize_children_age(tmp)  # ← нормализуем диапазоны возраста детей
+            # если модель вернула «человеческое» время (напр. «8ч вечера»), но 24ч не выставился — попробуем умную чистилку
+            if (tmp.get("event_time") and not tmp.get("event_time_24")):
+                smart_t = _clean_time_smart(tmp.get("event_time"))
+                if smart_t:
+                    tmp["event_time_24"] = smart_t
+                    if tmp:
+                        update_state(user_id, tmp)
+                    st = get_state(user_id) or {}
     except Exception as e:
         logger.warning(f"[block03] quick extract failed: {e}")
 
@@ -813,9 +1092,15 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
                     f"Жених {normalize_proper_name(n1)} невеста {normalize_proper_name(n2)}"
                 )
             else:
-                # Если двух имён в тексте нет — оставляем как есть (без строгой проверки),
-                # чтобы не терять одиночное имя, которое дала модель.
-                if not nm:
+                # Для свадьбы НЕ принимаем «сын/дочь/жених/невеста» без имён.
+                # Допускаем: одно реальное имя ИЛИ «Имя и Имя».
+                two_names = re.match(r"^\s*([A-Za-zА-Яа-яЁё][\w\-']+)\s+и\s+([A-Za-z-А-Яа-яЁё][\w\-']+)\s*$", nm)
+                if two_names:
+                    # оставляем как есть (не нормализуем склейкой по словам)
+                    pass
+                elif _is_probable_name(nm):
+                    parsed_data["celebrant_name"] = normalize_proper_name(nm)
+                else:
                     parsed_data.pop("celebrant_name", None)
         else:
             # Обычная жёсткая проверка для ДР/юбилеев/прочего
@@ -839,6 +1124,23 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     st = get_state(user_id) or {}
     logger.info("[block03] после upsert: %s", {k: st.get(k) for k in SAFE_KEYS})
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Семейный формат: по умолчанию считаем, что именинника нет,
+    # если в истории нет явных признаков ДР/свадьбы/юбилея и имени.
+    # Это предотвращает ложный хендовер из-за обязательных celebrant_*.
+    # ─────────────────────────────────────────────────────────────────────
+    try:
+        event_type = (st.get("show_type") or "").strip().lower()
+        if event_type == "семейное" and not _true(st.get("no_celebrant")):
+            combined_ctx = (st.get("event_description") or "").strip()
+            kind_ctx = _detect_event_context(st, combined_ctx)  # 'birthday' | 'wedding' | 'jubilee' | None
+            has_explicit_name = bool(st.get("celebrant_name"))
+            if (kind_ctx is None) and (not has_explicit_name):
+                update_state(user_id, {"no_celebrant": "Да"})
+                st = get_state(user_id) or {}
+    except Exception as e:
+        logger.debug("[block03] family no_celebrant default failed: %s", e)
+
     # Снепшот
     snap = build_structured_snapshot(st)
     update_state(user_id, {"structured_cache": snap})
@@ -847,6 +1149,8 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     # 2) Дата/время → нормализация, попытка мгновенного availability
 
     combined_text = f"{prev_info}\n{message_text}".strip()
+    # явное упоминание даты в тексте (нужно, чтобы не подставлять «сегодня» при одном времени)
+    explicit_date_mentioned = bool(_DATE.search(combined_text) or any(m in combined_text.lower() for m in MONTH_TOKENS))
     match_date = None
     match_time = None
 
@@ -874,10 +1178,19 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
         # запомним старые значения чтобы понять — изменилась ли дата/время
         old_date_iso = (st.get("event_date_iso") or "").strip()
         old_time_24  = (st.get("event_time_24") or "").strip()
-        if match_date:
-            update_state(user_id, {"event_date_iso": _clean_date(match_date)})
+        # принимаем дату только если она явно присутствовала в исходном тексте
+        if match_date and explicit_date_mentioned:
+            cleaned_date = _clean_date_smart(match_date, fallback_year=current_year)
+            if cleaned_date:
+                update_state(user_id, {"event_date_iso": cleaned_date})
         if match_time:
-            update_state(user_id, {"event_time_24": _clean_time(match_time)})
+            cleaned_time = _clean_time_smart(match_time)
+            if cleaned_time:
+                update_state(user_id, {"event_time_24": cleaned_time})
+        # после апдейтов — ещё раз нормализуем возраст детей (вдруг LLM прислал '8-12')
+        tmp2 = get_state(user_id) or {}
+        normalize_children_age(tmp2)
+        update_state(user_id, tmp2)
         # если ключ даты-времени изменился → сбросить availability_lock
         st_after_dt = get_state(user_id) or {}
         new_date_iso = (st_after_dt.get("event_date_iso") or "").strip()
@@ -891,8 +1204,9 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
 
     # 3) Если есть нормализованные дата+время — проверяем слоты и отвечаем
     if not st.get("availability_reply_sent"):
-        date_iso = _clean_date(match_date) if match_date else None
-        time_24  = _clean_time(match_time) if match_time else ""
+        # не идём в availability, если дата не была явно указана
+        date_iso = _clean_date_smart(match_date, fallback_year=current_year) if (match_date and explicit_date_mentioned) else None
+        time_24  = _clean_time_smart(match_time) if match_time else ""
         if date_iso and time_24:
             # ── Гейт по availability_lock: не пере-проверяем и не пере-уведомляем для той же даты-времени
             st = get_state(user_id) or {}
@@ -1038,9 +1352,16 @@ def handle_block3(message_text, user_id, send_reply_func, client_request_date=No
     # 6) Фолбек: все данные есть, но availability ещё не отправлен (учитываем availability_lock)
     st = get_state(user_id) or {}
     if (not missing) and (not st.get("availability_reply_sent")) and (st.get("event_date") or st.get("event_date_iso")) and (st.get("event_time") or st.get("event_time_24")):
-        date_iso = st.get("event_date_iso") or _clean_date(st.get("event_date"))
-        time_24  = st.get("event_time_24") or _clean_time(st.get("event_time"))
-        if date_iso and time_24:
+        # доп. защита: дата должна явно присутствовать в истории
+        history = str(st.get("event_description") or "")
+        explicit_date_in_history = bool(_DATE.search(history) or any(m in history.lower() for m in MONTH_TOKENS))
+        if not explicit_date_in_history:
+            # ждём явной даты, доспрашивание сработает ниже
+            pass
+        else:
+            date_iso = st.get("event_date_iso") or _clean_date(st.get("event_date"))
+            time_24  = st.get("event_time_24") or _clean_time(st.get("event_time"))
+        if explicit_date_in_history and date_iso and time_24:
             cur_key = _event_dt_key(st)
             alock = (st.get("availability_lock") or {}) if cur_key else {}
             same_dt = (alock.get("for_dt") == cur_key) if cur_key else False

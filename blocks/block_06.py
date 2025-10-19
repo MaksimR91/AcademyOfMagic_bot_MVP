@@ -39,6 +39,10 @@ SCENARIO_STAGE_MAP = {
     "block6":  "Ручная обработка заказа",
 }
 
+# ───────────────── Таймзона для дат/времени в Notion ────────────────────────
+# Если не задано через переменную окружения, используем Азия/Алматы
+NOTION_TIMEZONE = os.getenv("NOTION_TIMEZONE", "Asia/Almaty")
+ 
 # ───────────────── Причины handover (для комментариев / отказов) ────────────
 HANDOVER_REASON_HUMAN = {
     "asked_handover":          "Клиент попросил живое общение.",
@@ -190,11 +194,17 @@ def _build_notion_properties(st: dict) -> dict:
 
     dt_iso = _combine_date_time(date_iso, time_24)
     if dt_iso:
-        props["Когда"] = {"date": {"start": dt_iso}}
-        logger.info("[block6] prop 'Когда' → %s (date_iso=%s, time_24=%s)", dt_iso, date_iso, time_24)
+        # ВАЖНО: указываем таймзону, иначе Notion смещает время (интерпретирует как UTC)
+        date_payload = {"start": dt_iso}
+        if time_24:
+            date_payload["time_zone"] = NOTION_TIMEZONE
+        props["Когда"] = {"date": date_payload}
+        logger.info("[block6] prop 'Когда' → %s (date_iso=%s, time_24=%s, tz=%s)",
+                    dt_iso, date_iso, time_24, NOTION_TIMEZONE)
 
     # --- адрес --------------------------------------------------------------
-    address = (st.get("address") or "").replace('"""','"').replace("''","'")
+    # По CRM-логике в это поле можем писать и название заведения → используем event_location
+    address = (st.get("event_location") or st.get("address") or "").replace('"""','"').replace("''","'")
     if address:
         props["адрес"] = {"rich_text": [{"text": {"content": address[:400]}}]}
         logger.info("[block6] prop 'адрес' → '%s'", address)
@@ -209,22 +219,6 @@ def _build_notion_properties(st: dict) -> dict:
     show_type = st.get("show_type")
     if show_type:
         props["ТИП МЕРОПРИЯТИЯ"] = {"multi_select": [{"name": show_type[:80]}]}
-
-    # --- Возраст гостей ------------------------------------------------------
-    # Если шоу детское/семейное → берём guests_children_age,
-    # если взрослое → guests_age. Если тип не распознан — берём что есть.
-    guests_age_adult = st.get("guests_age") or ""
-    guests_age_kids  = st.get("guests_children_age") or ""
-    show_type_lc = (show_type or "").strip().lower()
-    guests_age_line = ""
-    if show_type_lc.startswith("взрос"):
-        guests_age_line = guests_age_adult or ""
-    elif show_type_lc.startswith("дет") or show_type_lc.startswith("сем"):
-        guests_age_line = guests_age_kids or ""
-    else:
-        guests_age_line = guests_age_adult or guests_age_kids or ""
-    if guests_age_line:
-        props["Возраст гостей"] = {"rich_text": [{"text": {"content": guests_age_line[:200]}}]}
 
     # --- предоплата ---------------------------------------------------------
     payment_valid = st.get("payment_valid")

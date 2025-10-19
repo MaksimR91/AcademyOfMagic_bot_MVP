@@ -50,6 +50,8 @@ def handle_block5(
         # формируем две переменные для шаблона
         try:
             # Одним вызовом: сам разрежет и пошлёт несколько template-частей
+            # Сначала залогируем аккуратный вид резюме (с переводами строк):
+            logger.info("[block5] owner resume (pretty):\n%s", summary)
             logger.info("[block5] sending owner resume (len=%d): %s", len(summary), summary.replace("\n"," | "))
             wa_resps = send_owner_resume(summary)   # list[requests.Response]
             statuses = [getattr(r, "status_code", "?") for r in wa_resps]
@@ -104,6 +106,13 @@ def _pick(snap, st, key, default=""):
 def _build_summary(st: dict, comment: str) -> str:
     snap = st.get("structured_cache") or {}
 
+    def _is_nonempty(val) -> bool:
+        if val is None:
+            return False
+        if isinstance(val, str):
+            return val.strip() != ""
+        return True
+
     def _yes_no(val):
         if val is True:  return "Да"
         if val is False: return "Нет"
@@ -121,15 +130,6 @@ def _build_summary(st: dict, comment: str) -> str:
         tm_raw = _pick(snap, st, "event_time", "")
         date_time = (dt_raw + " " + tm_raw).strip()
 
-    payment_status = ""
-    if "payment_valid" in st:
-        payment_status = _yes_no(st.get("payment_valid"))
-    amount = st.get("payment_amount") or ""
-
-    saw_before = ""
-    if "saw_show_before" in st:
-        saw_before = _yes_no(st.get("saw_show_before"))
-
     phone = (
         st.get("normalized_number")
         or st.get("client_phone")
@@ -137,13 +137,6 @@ def _build_summary(st: dict, comment: str) -> str:
     )
 
     has_photo = "Да" if st.get("celebrant_photo_id") else "Нет"
-
-    children_client = ""
-    raw_children = st.get("client_children_attend")
-    if isinstance(raw_children, bool):
-        children_client = _yes_no(raw_children)
-    elif raw_children:
-        children_client = str(raw_children)
 
     celebrant_name   = _pick(snap, st, "celebrant_name")
     celebrant_age    = _pick(snap, st, "celebrant_age")
@@ -173,37 +166,61 @@ def _build_summary(st: dict, comment: str) -> str:
     # Берём именно event_location (может содержать и место, и адрес), приоритет: state → structured_cache
     event_loc = _pick(snap, st, "event_location") or (st.get("event_location") or "")
     event_loc = str(event_loc).replace('"""','"').replace("''","'")
-    # формируем аккуратный формат мероприятия:
-    # 1) нормализованный event_format из structured_cache/state,
-    # 2) иначе fallback: короткая выжимка из event_description (до первого перевода строки/точки).
+    # Нормализованный формат мероприятия (если есть)
     fmt = _pick(snap, st, "event_format") or (st.get("format") or "")
-    lines = [
-        "📄 *Резюме для Арсения*",
-        f"Этап сценария: {st.get('stage','')}",
-        f"Имя клиента: {st.get('client_name','')}",
-        f"Телефон клиента: {phone}",
-        f"Тип шоу: {st.get('show_type','')}",
-        f"Формат мероприятия: {fmt}",
-        f"Выбранный пакет: {st.get('package','')}",
-        f"Дата, время: {date_time}",
-        f"Адрес: {event_loc}",
-        f"Имя виновника торжества: {celebrant_name}",
-        f"Возраст виновника: {celebrant_age}",
-        f"Количество гостей: {guests_count}",
-        f"Возраст гостей: {guests_age_line}",
-        f"Внесена ли предоплата: " + (_yes_no(st.get('payment_valid')) if 'payment_valid' in st else ""),
-        f"Сумма предоплаты (тенге): {st.get('payment_amount','')}",
-        f"Будут ли дети клиента: " + (_yes_no(st.get('client_children_attend')) if isinstance(st.get('client_children_attend'), bool) else str(st.get('client_children_attend') or "")),
-        f"Видел(а) шоу раньше?: " + (_yes_no(st.get('saw_show_before')) if 'saw_show_before' in st else ""),
-        f"Есть фото именинника: {has_photo}",
-    ]
 
-    if st.get("decline_reason"):
-        lines.append(f"Причина отказа: {st.get('decline_reason')}")
-    if st.get("special_wishes"):
-        lines.append(f"Особенности/пожелания: {st.get('special_wishes')}")
-    lines.append(f"Комментарий: {comment}")
-    return "\n".join(lines)
+    # Флаги
+    no_celebrant = str(st.get("no_celebrant") or "").strip().lower() in {"да","yes","true","1","y"}
+
+    # Поля с «да/нет»
+    payment_status = _yes_no(st.get("payment_valid")) if "payment_valid" in st else ""
+    saw_before     = _yes_no(st.get("saw_show_before")) if "saw_show_before" in st else ""
+    children_client = ""
+    if isinstance(st.get("client_children_attend"), bool):
+        children_client = _yes_no(st.get("client_children_attend"))
+    elif _is_nonempty(st.get("client_children_attend")):
+        children_client = str(st.get("client_children_attend"))
+
+    # Компоновщик: добавляет строку только если значение непустое
+    lines = []
+    def add(label: str, value):
+        if _is_nonempty(value):
+            lines.append(f"{label}: {value}")
+
+    # Шапка
+    header = "📄 *Резюме для Арсения*"
+    add("Этап сценария", st.get("scenario_stage_at_handover") or st.get("stage",""))
+    add("Имя клиента", st.get("client_name",""))
+    add("Телефон клиента", phone)
+    add("Тип шоу", st.get("show_type",""))
+    add("Формат мероприятия", fmt)
+    add("Дата, время", date_time)
+    add("Адрес", event_loc)
+
+    # Блок по имениннику — только если он есть
+    if not no_celebrant:
+        add("Имя виновника торжества", celebrant_name)
+        add("Возраст виновника", celebrant_age)
+
+    # Гости
+    add("Количество гостей", guests_count)
+    add("Возраст гостей", guests_age_line)
+
+    # Оплата (только если что-то известно)
+    add("Внесена ли предоплата", payment_status)
+    add("Сумма предоплаты (тенге)", st.get("payment_amount",""))
+
+    # Прочее (только непустые)
+    add("Будут ли дети клиента", children_client)
+    add("Видел(а) шоу раньше?", saw_before)
+    add("Есть фото именинника", has_photo if _is_nonempty(has_photo) else "")
+    add("Причина отказа", st.get("decline_reason"))
+    add("Особенности/пожелания", st.get("special_wishes"))
+    add("Комментарий", comment)
+
+    # Возвращаем финальный текст: шапка + отфильтрованные строки
+    result = "\n".join([header] + lines)
+    return result
 
 # ---------------------------------------------------------------------------
 def _reason_to_comment(reason: str) -> str:

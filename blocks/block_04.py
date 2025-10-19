@@ -1,6 +1,7 @@
 import json
 import time
 from utils.materials import s3, S3_BUCKET
+import random
 from utils.wants_handover_ai import wants_handover_ai
 from state.state import get_state, update_state
 from logger import logger
@@ -57,11 +58,23 @@ def choose_video(show_type: str, registry: dict) -> str | None:
     """
     cat = "child" if show_type in ("детское", "семейное") else "adult"
     videos = (registry.get("videos") or {})
-    vids = videos.get(cat, [])
-    if not vids:
-        # на всякий случай фолбэк
-        vids = videos.get("adult", []) or videos.get("child", [])
-    return (vids[0] or {}).get("media_id") if vids else None
+
+    # Список кандидатов по целевой категории
+    candidates = [v for v in (videos.get(cat) or []) if isinstance(v, dict) and v.get("media_id")]
+
+    # Фолбэк, если в целевой категории пусто
+    if not candidates:
+        fb = (videos.get("adult") or []) + (videos.get("child") or [])
+        candidates = [v for v in fb if isinstance(v, dict) and v.get("media_id")]
+
+    if not candidates:
+        return None
+
+    # Случайный выбор одного видео
+    choice = random.choice(candidates)
+    mid = choice.get("media_id")
+    logger.info("[block4] choose_video: category=%s, pool=%d, picked=%s", cat, len(candidates), mid)
+    return mid
 
 def infer_show_type_from_stage(state: dict) -> str | None:
     """

@@ -175,15 +175,38 @@ def _rule_based_label(text: str) -> str | None:
     """
      # casefold — надёжнее, чем lower, для кириллицы и смешанных символов
     msg = (text or "").casefold()
+    # --- B2B-маркеры: роли, площадки, намерения ---
+    b2b_roles = [
+        "администратор", "админ", "директор", "управляющ", "менеджер",
+        "маркетолог", "event", "ивент", "агентство", "агенство", "организатор",
+        "пиар", "pr ", "hr ", "отдел", "владелец", "собственник"
+    ]
+    b2b_venues = [
+        "бар", "ресторан", "клуб", "кафе", "паб", "караоке", "лаунж",
+        "кофейня", "площадка", "сцена", "театр", "лофт", "конференц", "бц ",
+        "бизнес-центр", "коворкинг", "трц", "тц", "торговый центр", "молл"
+    ]
+    b2b_intents = [
+        "корпоратив", "открытие", "презентац", "запуск", "активац", "промо",
+        "день города", "фестиваль", "ярмарка", "event", "шоу-программ", "вечер фокусов"
+    ]
+    # --- Явные «не B2B» признаки: ДР/свадьба/детсад ---
+    birthday_markers = ["день рожд", "др", "именин", "юбиле"]
+    wedding_markers  = ["свадьба", "свадьб", "жених", "невест", "роспись", "бракосочетан", "загс", "регистрация брака"]
+    kindergarten_markers = ["детсад", "садик", "детский сад", "в детсаду", "в детском саду", "выпускной в саду"]
+
+    has_b2b = any(k in msg for k in b2b_roles + b2b_venues + b2b_intents)
+    has_birth = any(k in msg for k in birthday_markers)
+    has_wedding = any(k in msg for k in wedding_markers)
+    has_kindergarten = any(k in msg for k in kindergarten_markers)
+    # Если это B2B и нет явных признаков пунктов 1–3 → сразу «нестандартное»
+    if has_b2b and not (has_birth or has_wedding or has_kindergarten):
+        return "нестандартное"
     # 1) Детсад → детское
-    if any(k in msg for k in [
-        "детсад", "детсаду", "в детсаду",
-        "садик", "детский сад", "в детском саду",
-        "выпускной в саду"
-    ]):
+    if has_kindergarten:
         return "детское"
     # 2) Свадьба/жених/невест- → взрослое (учитываем словоформы + явное слово)
-    if any(k in msg for k in ["свадьба", "свадьб", "жених", "невест", "роспись", "бракосочетан", "загс", "регистрация брака"]):
+    if has_wedding:
         return "взрослое"
     # 3) Явно семейные маркеры
     if any(k in msg for k in ["семейн", "крещени"]):
@@ -196,6 +219,39 @@ def _rule_based_label(text: str) -> str | None:
     if any(k in msg for k in ["трц", "тц", "сцена", "фойе"]):
          return "нестандартное"
     return None
+
+def _post_adjust_label(message_text: str, label: str) -> str:
+    """
+    Подстраховка после LLM: если модель вернула не «нестандартное», но в тексте
+    явно B2B-контекст (и нет явных признаков ДР/свадьбы/детсада), форсируем «нестандартное».
+    """
+    if not label or label == "нестандартное":
+        return label
+    msg = (message_text or "").casefold()
+    b2b_roles = [
+        "администратор", "админ", "директор", "управляющ", "менеджер",
+        "маркетолог", "event", "ивент", "агентство", "агенство", "организатор",
+        "пиар", "pr ", "hr ", "отдел", "владелец", "собственник"
+    ]
+    b2b_venues = [
+        "бар", "ресторан", "клуб", "кафе", "паб", "караоке", "лаунж",
+        "кофейня", "площадка", "сцена", "театр", "лофт", "конференц", "бц ",
+        "бизнес-центр", "коворкинг", "трц", "тц", "торговый центр", "молл"
+    ]
+    b2b_intents = [
+        "корпоратив", "открытие", "презентац", "запуск", "активац", "промо",
+        "день города", "фестиваль", "ярмарка", "event", "шоу-программ", "вечер фокусов"
+    ]
+    birthday_markers = ["день рожд", "др", "именин", "юбиле"]
+    wedding_markers  = ["свадьба", "свадьб", "жених", "невест", "роспись", "бракосочетан", "загс", "регистрация брака"]
+    kindergarten_markers = ["детсад", "садик", "детский сад", "в детсаду", "в детском саду", "выпускной в саду"]
+    has_b2b = any(k in msg for k in b2b_roles + b2b_venues + b2b_intents)
+    has_birth = any(k in msg for k in birthday_markers)
+    has_wedding = any(k in msg for k in wedding_markers)
+    has_kindergarten = any(k in msg for k in kindergarten_markers)
+    if has_b2b and not (has_birth or has_wedding or has_kindergarten):
+        return "нестандартное"
+    return label
 
 def handle_block2(message_text, user_id, send_reply_func):
 
@@ -281,6 +337,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
         ts = time.time()
         state.update_state(user_id, {
             "show_type": rb,
+            "show_type_src": "rule",
             "uninformative_replies": 0,
             "last_sender": "user",
             "last_message_ts": ts,
@@ -316,8 +373,14 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     if not show_type or show_type not in allowed:
         logger.info(f"[warn] ⚠️ Некорректный ответ модели: {show_type!r}, fallback → 'неизвестно'")
         show_type = "неизвестно"
-    logger.info(f"[debug] 🧠 определён тип шоу: {show_type}")
+    logger.info(f"[debug] 🧠 определён тип шоу (LLM): {show_type}")
 
+    # Пост-правка после LLM (B2B → нестандартное)
+    adjusted = _post_adjust_label(message_text, show_type)
+    if adjusted != show_type:
+        logger.info(f"[debug] 🔧 пост-правка типа шоу: {show_type} → {adjusted}")
+        show_type = adjusted
+        state.update_state(user_id, {"show_type_overridden": True})
 
     # 📥 ДОПОЛНИТЕЛЬНО: забираем поля из ответа клиента в block2
     try:
@@ -400,6 +463,7 @@ def handle_block2_user_reply(message_text, user_id, send_reply_func):
     ts = time.time()
     state.update_state(user_id, {
         "show_type": show_type,
+        "show_type_src": state.get_state(user_id).get("show_type_src") or "llm",
         "uninformative_replies": 0,
         "last_sender": "user",
         "last_message_ts": ts,
