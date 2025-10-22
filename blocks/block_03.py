@@ -258,14 +258,44 @@ ADDRESS_TOKEN_RE = re.compile(
     re.IGNORECASE
 )
 
+# Доп. «свободный» адрес без обязательного префикса улицы:
+# ловит "Сатпаева 87", "Пушкина 10, кв. 5", "Абая 15/2", и т.п.
+# (ограничили до разумного: слово(а) на кир/лат + номер дома, опционально кв.)
+FREEFORM_ADDRESS_RE = re.compile(
+    r'\b[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё.\- ]{2,}\s+\d{1,4}'
+    r'(?:[\/\-]\d{1,3})?'                                 # корпус/дробь
+    r'(?:\s*,\s*(?:кв\.|квартира)\s*\d{1,4})?'            # квартира
+    r'\b',
+    re.IGNORECASE
+)
+
 def _extract_address_chunk(text: str) -> str | None:
     if not text:
         return None
+    # 1) сначала строго по токенам "ул./пр./пер./…" (минимум ложных срабатываний)
     m = ADDRESS_TOKEN_RE.search(text)
-    if not m:
-        return None
-    # вернём адрес ровно как в исходном тексте (без изменения регистра/кавычек)
-    return m.group(0).strip()
+    if m:
+        return m.group(0).strip()
+    # 2) иначе — свободная форма "Сатпаева 87, кв. 33"
+    m2 = FREEFORM_ADDRESS_RE.search(text)
+    if m2:
+        cand = m2.group(0).strip()
+        # ── анти-лоукейс на возраст: "… 12 лет/год(а/ов)" непосредственно после числа
+        tail = text[m2.end(): m2.end()+12].lower()
+        if re.match(r'\s*(лет|год(?:а|ов)?)\b', tail):
+            return None
+        # ── анти-лоукейс на возраст рядом со словами "дочь/сын/мальчик/девочка/ребёнок"
+        left = text[max(0, m2.start()-24): m2.start()].lower()
+        # если слева «детский» контекст и число маленькое (<=18) — считаем это возрастом, а не адресом
+        age_ctx = any(tok in left for tok in ['доч', 'сын', 'мальчик', 'девоч', 'ребён', 'ребен'])
+        try:
+            num = int(re.search(r'\d{1,4}', cand).group(0))
+        except Exception:
+            num = None
+        if age_ctx and (num is not None) and num <= 18:
+            return None
+        return cand
+    return None
 
 # ── helpers для оценки «генеричности»/«конкретности» локации -----------------
 _GENERIC_LOCATION_TOKENS = {
@@ -468,8 +498,18 @@ def upsert_state_safe(user_id: str, parsed: dict) -> dict:
         # Спец-правило: event_location можно «апгрейдить» с генерика на конкретику
         if k == "event_location":
             cur = st.get(k)
+            # 1) классический апгрейд: с «дом/кафе…» на конкретику/адрес
             if _is_generic_location_token(cur) and not _is_generic_location_token(v) and _looks_specific_location(v):
                 changed[k] = v
+            else:
+                # 2) если текущее значение выглядит «мусорным» (не адрес, не конкретика, не generic),
+                #    а новое — похоже на адрес/конкретику, разрешаем заменить.
+                cur_is_specific = _looks_specific_location(cur)
+                cur_has_addr    = bool(_extract_address_chunk(str(cur or "")))
+                v_is_specific   = _looks_specific_location(v)
+                v_has_addr      = bool(_extract_address_chunk(str(v or "")))
+                if (not cur_is_specific) and (not cur_has_addr) and (v_is_specific or v_has_addr):
+                    changed[k] = v
          # Спец-правило: guests_children_age — апгрейд одиночного значения до диапазона
         if k == "guests_children_age" and isinstance(v, str):
             cur = str(st.get(k) or "").strip()

@@ -1,6 +1,6 @@
 from utils.env_loader import ensure_env_loaded
 ensure_env_loaded()
-import os, requests, logging, json
+import os, requests, logging, json, re
 from utils.token_manager import get_token
 
 logger = logging.getLogger(__name__)
@@ -10,6 +10,7 @@ OWNER_WA_ID   = os.getenv("OWNER_WA_ID")                # 7705…
 PHONE_ID = os.getenv("PHONE_NUMBER_ID")
 API_URL  = f"https://graph.facebook.com/v19.0/{PHONE_ID}/messages"
 MAX_LEN  = 4096                                         # лимит WA для text.body
+MISSING_PLACEHOLDER = "—"                              # чем заполняем пустые значения
 
 # ─────────────────────────────────────────────────────────────────
 # helper: режем длинный текст
@@ -84,64 +85,63 @@ def send_video(to: str, media_id: str):
         "video",
     )
 
-
-def send_owner_resume(full_text: str):
+def _sanitize_param(value: str) -> str:
     """
-    Шлёт резюме Арсению *компактно*:
-      • несколько полей упаковываются в один HSM
-        (символ • вместо «\\n» – внутри {{1}} переводы строк запрещены);
-      • размер каждого HSM ≤ 1024 симв. – если не влезает, начинаем новый.
-    Возвращает list[requests.Response].
+    Параметр шаблона не должен содержать \\r\\n\\t и >4 подряд пробелов.
+    Сокращаем лишнее и обрезаем крайние пробелы. Ограничим разумной длиной.
+    """
+    if value is None:
+        return MISSING_PLACEHOLDER
+    s = str(value).replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = re.sub(r" {2,}", " ", s).strip()
+    # WhatsApp не документирует строгий лимит параметра, но безопасно держать <1024
+    if len(s) > 1000:
+        s = s[:1000]
+    return s if s else MISSING_PLACEHOLDER
+
+def send_owner_mvp_summary(params: list[str]):
+    """
+    Отправляет один шаблон summary_owner_mvp_version владельцу (OWNER_WA_ID).
+    params — список из 10 значений (в порядке {{1}}..{{10}}). Пустые заполняем "—".
+    Возвращает requests.Response.
     """
     if not OWNER_WA_ID:
         raise RuntimeError("OWNER_WA_ID не задан в переменных окружения")
+    if not re.fullmatch(r"\d{10,15}", OWNER_WA_ID):
+        raise RuntimeError(f"Некорректный OWNER_WA_ID={OWNER_WA_ID!r}")
 
-    MAX_LEN  = 1024
-    SEP      = " • "          # разделитель вместо «\n»
-    pieces   = [s.strip() for s in full_text.splitlines() if s.strip()]
+    # Нормализуем и фиксируем длину ровно 10
+    normalized: list[str] = [ _sanitize_param(x) for x in (params or []) ]
+    if len(normalized) < 10:
+        normalized += [MISSING_PLACEHOLDER] * (10 - len(normalized))
+    elif len(normalized) > 10:
+        normalized = normalized[:10]
 
-    # --- упаковываем ------------------------------------------------
-    chunks: list[str] = []
-    current = ""
-    for p in pieces:
-        candidate = (current + SEP if current else "") + p
-        if len(candidate) > MAX_LEN:
-            if current:
-                chunks.append(current)   # фиксируем заполненный
-            current = p                  # начинаем новый
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-
-    responses = []
-    for idx, chunk in enumerate(chunks, 1):
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": OWNER_WA_ID,
-            "type": "template",
-            "template": {
-                "name": "owner_summary_chunk",     # approved HSM
-                "language": {"code": "ru"},
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": chunk}
-                        ],
-                    }
-                ],
-            },
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": OWNER_WA_ID,
+        "type": "template",
+        "template": {
+            "name": "summary_owner_mvp_version",
+            "language": { "code": "ru" },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [ { "type": "text", "text": v } for v in normalized ]
+                }
+            ]
         }
-        try:
-            resp = requests.post(API_URL, headers=_headers(), json=payload, timeout=20)
-            responses.append(resp)
-            if resp.status_code >= 400:
-                logger.error(
-                    "WA owner send error %s — %s\nresponse=%s\npayload=%s",
-                    resp.status_code, resp.reason, resp.text,
-                    json.dumps(payload, ensure_ascii=False),
-                )
-        except Exception as e:
-            logger.error("❌ WA owner_resume to %s: %s • chunk=%r", OWNER_WA_ID, e, chunk)
-    return responses
+    }
+    try:
+        resp = requests.post(API_URL, headers=_headers(), json=payload, timeout=20)
+        if resp.status_code >= 400:
+            logger.error("WA owner MVP send error %s — %s\nresponse=%s\npayload=%s",
+                         resp.status_code, resp.reason, resp.text,
+                         json.dumps(payload, ensure_ascii=False))
+        else:
+            logger.info("➡️ WA template(summary_owner_mvp_version) → %s (%s)",
+                        OWNER_WA_ID, resp.status_code)
+        return resp
+    except Exception as e:
+        logger.error("❌ WA owner_mvp_summary to %s: %s", OWNER_WA_ID, e)
+        raise

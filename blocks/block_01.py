@@ -4,6 +4,7 @@ from utils.ask_openai import ask_openai
 from utils.wants_handover_ai import wants_handover_ai
 from state.state import get_state, update_state
 from logger import logger
+from utils.whatsapp_senders import send_image, send_text  # ← используем прямые sender’ы для картинки
 
 # Пути к промптам
 GLOBAL_PROMPT_PATH = "prompts/global_prompt.txt"
@@ -22,12 +23,15 @@ def proceed_to_block_2(user_id, send_func=None):
 # Можно переключать через переменную окружения USE_AI_GREETING=true/false
 USE_AI_GREETING = (os.getenv("USE_AI_GREETING", "false").strip().lower() == "true")
 
-# Статические приветственные сообщения (каждый абзац — отдельное сообщение)
-STATIC_GREETING_MESSAGES = [
-    "Здравствуйте! Я – бот иллюзиониста Арсения. Моя задача – помочь вам быстро получить информацию о магическом шоу без ожидания ответа Арсения.",
-    "Арсений – профессиональный волшебник, шоу будет незабываемым, но нужно ответить на пару вопросов, чтобы всё прошло идеально. После получения ваших ответов я вышлю цены и предложу лучший вариант программы.",
-    "И маленький секрет: если вы ответите на все вопросы, Арсений без дополнительной платы покажет на шоу особый бонусный фокус, подготовленный специально для вас!"
-]
+# Новый статический сценарий приветствия:
+# 1) короткий текст с эмодзи → 2) КАРТИНКА → 3) бонус с эмодзи
+GREETING_TEXT_1 = "Здравствуйте!👋 Я - бот иллюзиониста Арсения. Задам пару вопросов, подберу программу и пришлю цены✨."
+GREETING_TEXT_3 = "🎁Бонус: при ответе на все вопросы - на шоу будет особый фокус от Арсения специально для вас!"
+# media_id картинки для шага 2 (загружается в WhatsApp Business и попадает в env)
+GREETING_IMAGE_ID = os.getenv("GREETING_IMAGE_ID")  # пример: "1234567890123456"
+
+# fallback-текст, если картинка недоступна
+GREETING_IMAGE_FALLBACK = "Арсений — профессиональный волшебник, шоу будет незабываемым ✨"
 
 
 
@@ -48,14 +52,28 @@ def handle_block1(message_text, user_id, send_reply_func):
         reply = ask_openai(full_prompt)
         send_reply_func(reply)
     else:
-        # Отправляем 3 статических сообщения с паузой 3 сек между ними
-        for idx, msg in enumerate(STATIC_GREETING_MESSAGES):
-            send_reply_func(msg)
-            if idx < len(STATIC_GREETING_MESSAGES) - 1:
-                try:
-                    time.sleep(3)
-                except Exception as e:
-                    logger.warning("[block1] sleep interrupted: %s", e)
+        # Отправляем: текст → картинка → бонус. Паузы делаем короче, чтобы не утомлять.
+        try:
+            send_reply_func(GREETING_TEXT_1)
+            time.sleep(1.5)
+        except Exception as e:
+            logger.warning("[block1] send #1 failed: %s", e)
+
+        # Картинка вместо длинного второго текста; если media_id не задан — шлём короткий fallback
+        try:
+            if GREETING_IMAGE_ID:
+                send_image(user_id, GREETING_IMAGE_ID)
+            else:
+                logger.warning("[block1] GREETING_IMAGE_ID is not set — sending text fallback")
+                send_reply_func(GREETING_IMAGE_FALLBACK)
+            time.sleep(1.5)
+        except Exception as e:
+            logger.warning("[block1] send image/fallback failed: %s", e)
+
+        try:
+            send_reply_func(GREETING_TEXT_3)
+        except Exception as e:
+            logger.warning("[block1] send #3 failed: %s", e)
 
     # Обновляем состояние
     update_state(user_id, {"stage": "block1", "last_message_ts": time.time()})
