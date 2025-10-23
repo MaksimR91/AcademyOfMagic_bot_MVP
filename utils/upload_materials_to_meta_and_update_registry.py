@@ -17,13 +17,18 @@ KP_PREFIX = "materials/KP/"
 REGISTRY_KEY = "materials/media_registry.json"
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 META_URL        = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/media"
+GREETING_PREFIX = "materials/greeting/"
 
 def registry_load():
     try:
         obj = s3.get_object(Bucket=S3_BUCKET, Key=REGISTRY_KEY)
-        return json.loads(obj["Body"].read())
+        reg = json.loads(obj["Body"].read())
+        # миграция старых реестров: гарантируем наличие секции images
+        if "images" not in reg:
+            reg["images"] = {}
+        return reg
     except s3.exceptions.NoSuchKey:
-        return {"videos": {}, "kp": {}}
+        return {"videos": {}, "kp": {}, "images": {}}
     except Exception as e:
         logger.error(f"registry_load: {e}")
         return {"videos": {}, "kp": {}}
@@ -105,6 +110,13 @@ def cat_kp(fname: str) -> str:
     """
     return "common"
 
+def cat_image(fname: str) -> str:
+    """
+    Изображения сейчас используем для приветствия — 'greeting'.
+    При необходимости можно расширить (добавить иконки/постеры и т.п.).
+    """
+    return "greeting"
+
 def upload_materials_to_meta_and_update_registry(wa_token: str):
     reg  = registry_load()
     date = datetime.utcnow().strftime("%Y-%m-%d")
@@ -139,6 +151,46 @@ def upload_materials_to_meta_and_update_registry(wa_token: str):
                 "size": obj["Size"],
                 "last_modified": obj["LastModified"].isoformat(),
             })
+        # ------------- IMAGES (greeting) -------------
+        resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=GREETING_PREFIX)
+        for obj in (resp.get("Contents") or []):
+            k = obj["Key"];   fname = os.path.basename(k)
+            if not fname or k.endswith("/"):
+                continue
+            cat = cat_image(fname)  # 'greeting'
+
+            # пере-загрузка каждые 27 дней
+            prev = reg["images"].get(cat)
+            need_refresh = True
+            if prev:
+                try:
+                    not_expired = (datetime.strptime(prev["uploaded_at"], "%Y-%m-%d") + timedelta(days=27) > datetime.utcnow())
+                except Exception:
+                    not_expired = False
+                # если не истёк срок и файл не менялся — пропускаем
+                if not_expired and prev.get("filename") == fname and prev.get("last_modified") == obj["LastModified"].isoformat():
+                    need_refresh = False
+            if not need_refresh:
+                continue
+
+            local = os.path.join(tmp, fname)
+            try:
+                s3.download_file(S3_BUCKET, k, local)
+            except ClientError as e:
+                logger.error(f"DL {k}: {e}")
+                continue
+
+            mid = meta_upload(local, "image", wa_token)
+            if not mid:
+                continue
+
+            reg.setdefault("images", {})[cat] = {
+                "filename": fname,
+                "media_id": mid,
+                "uploaded_at": date,
+                "size": obj["Size"],
+                "last_modified": obj["LastModified"].isoformat(),
+            }
 
         # ------------- KP --------------------------
         resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=KP_PREFIX)
