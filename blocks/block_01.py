@@ -89,7 +89,6 @@ def handle_block1(message_text, user_id, send_reply_func):
         # Пытаемся взять media_id приветственной картинки из реестра
         media_id = _get_greeting_media_id()
         if media_id:
-            from whatsapp_senders import send_image
             try:
                 # user_id — это WA: 7XXXXXXXXXX (строка). Отправляем картинку.
                 send_image(str(user_id), media_id)

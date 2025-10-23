@@ -31,7 +31,8 @@ def registry_load():
         return {"videos": {}, "kp": {}, "images": {}}
     except Exception as e:
         logger.error(f"registry_load: {e}")
-        return {"videos": {}, "kp": {}}
+        # при любой ошибке возвращаем структуру с images, чтобы не падать в блоках
+        return {"videos": {}, "kp": {}, "images": {}}
 
 def registry_save(reg):
     try:
@@ -245,3 +246,29 @@ def start_media_upload_loop():
             time.sleep(86400)
     threading.Thread(target=loop, daemon=True).start()
     logger.info("📅 Цикл ежедневной загрузки материалов запущен")
+
+# ──────────────────────────────────────────────────────────────────────────
+# Одноразовый запуск из app.py (gevent.spawn)
+# Совместим по сигнатуре: main(force_if_missing=..., skip_upload_existing=...)
+def main(force_if_missing: bool = False, skip_upload_existing: bool = True):
+    """
+    Однократная прогрузка материалов в Meta и пересборка media_registry.json.
+    Использует самый свежий WA-токен из get_token().
+    """
+    try:
+        token = get_token()
+    except Exception as e:
+        logger.error(f"🔒 Не удалось получить токен для одноразовой загрузки: {e}")
+        return
+    try:
+        logger.info("🚀 Одноразовая загрузка материалов в Meta (main)")
+        upload_materials_to_meta_and_update_registry(token)
+        logger.info("✅ media_registry.json обновлён (main)")
+    except Exception as e:
+        logger.error(f"💥 main(): ошибка при одноразовой загрузке: {e}")
+
+__all__ = [
+    "upload_materials_to_meta_and_update_registry",
+    "start_media_upload_loop",
+    "main",
+]

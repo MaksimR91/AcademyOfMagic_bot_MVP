@@ -44,8 +44,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 try:
     from utils.upload_materials_to_meta_and_update_registry import main as upload_media_registry
-except Exception:
+except Exception as e:
     upload_media_registry = None
+    logger.warning("⚠️ upload_media_registry import failed: %s", e)
 
 logger.info("💬 logger test — должен появиться в консоли Render")
 
